@@ -122,3 +122,7 @@ type LocalConfiguration struct {
 	// Connection identifier to the virtualisation device
 	URI string
 }
+
+type VCloudConfigurationOptions struct {
+	Insecure bool
+}

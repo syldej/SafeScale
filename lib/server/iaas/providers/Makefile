@@ -11,7 +11,7 @@ generate:
 	@(cd opentelekom && $(MAKE) $(@))
 	@(cd ovh && $(MAKE) $(@))
 	@(cd local && $(MAKE) $(@))
-	@(cd erbc && $(MAKE) $(@))
+	@(cd ebrc && $(MAKE) $(@))
 
 vet:
 	@$(GO) vet ./...
@@ -25,5 +25,5 @@ clean:
 	@(cd opentelekom && $(MAKE) $(@))
 	@(cd ovh && $(MAKE) $(@))
 	@(cd local && $(MAKE) $(@))
-	@(cd erbc && $(MAKE) $(@))
+	@(cd ebrc && $(MAKE) $(@))
 	@$(RM) ./mocks/*.go || true
