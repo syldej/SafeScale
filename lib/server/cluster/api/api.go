@@ -22,7 +22,6 @@ import (
 	"github.com/CS-SI/SafeScale/lib/server/cluster/enums/ClusterState"
 	"github.com/CS-SI/SafeScale/lib/server/cluster/identity"
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
-	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
 	"github.com/CS-SI/SafeScale/lib/utils/serialize"
 )
@@ -32,7 +31,7 @@ import (
 // Cluster is an interface of methods associated to Cluster-like structs
 type Cluster interface {
 	// GetService ...
-	GetService(task concurrency.Task) *iaas.Service
+	GetService(task concurrency.Task) iaas.Service
 	// GetIdentity returns the identity of the cluster (name, flavor, complexity)
 	GetIdentity(task concurrency.Task) identity.Identity
 	// GetNetworkConfig returns network configuration of the cluster
@@ -47,9 +46,9 @@ type Cluster interface {
 	// GetState returns the current state of the cluster
 	GetState(concurrency.Task) (ClusterState.Enum, error)
 	// AddNode adds a node
-	AddNode(concurrency.Task, *resources.HostDefinition) (string, error)
+	AddNode(concurrency.Task, *pb.HostDefinition) (string, error)
 	// AddNodes adds several nodes
-	AddNodes(concurrency.Task, int, *resources.HostDefinition) ([]string, error)
+	AddNodes(concurrency.Task, int, *pb.HostDefinition) ([]string, error)
 	// DeleteLastNode deletes a node
 	DeleteLastNode(concurrency.Task, string) error
 	// DeleteSpecificNode deletes a node identified by its ID

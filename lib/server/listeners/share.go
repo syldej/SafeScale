@@ -21,7 +21,7 @@ import (
 	"fmt"
 
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
-	google_protobuf "github.com/golang/protobuf/ptypes/empty"
+	protobuf "github.com/golang/protobuf/ptypes/empty"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
@@ -31,6 +31,7 @@ import (
 	"github.com/CS-SI/SafeScale/lib/server/handlers"
 	"github.com/CS-SI/SafeScale/lib/server/utils"
 	convert "github.com/CS-SI/SafeScale/lib/server/utils"
+	libutils "github.com/CS-SI/SafeScale/lib/utils"
 )
 
 // ShareHandler ...
@@ -74,7 +75,7 @@ func (s *ShareListener) Create(ctx context.Context, in *pb.ShareDefinition) (*pb
 }
 
 // Delete call share service deletion
-func (s *ShareListener) Delete(ctx context.Context, in *pb.Reference) (*google_protobuf.Empty, error) {
+func (s *ShareListener) Delete(ctx context.Context, in *pb.Reference) (*protobuf.Empty, error) {
 	shareName := in.GetName()
 	log.Infof(">>> Listeners: share delete '%s'", shareName)
 	defer log.Debugf("<<< Listeners: share delete '%s'", shareName)
@@ -96,21 +97,23 @@ func (s *ShareListener) Delete(ctx context.Context, in *pb.Reference) (*google_p
 	if err != nil {
 		switch err.(type) {
 		case resources.ErrResourceNotFound:
-			return &google_protobuf.Empty{}, grpc.Errorf(codes.NotFound, err.Error())
+			return &protobuf.Empty{}, grpc.Errorf(codes.NotFound, err.Error())
+		case libutils.ErrNotFound:
+			return &protobuf.Empty{}, grpc.Errorf(codes.NotFound, err.Error())
 		default:
-			return &google_protobuf.Empty{}, grpc.Errorf(codes.Internal, errors.Wrap(err, fmt.Sprintf("can't delete share '%s'", shareName)).Error())
+			return &protobuf.Empty{}, grpc.Errorf(codes.Internal, errors.Wrap(err, fmt.Sprintf("can't delete share '%s'", shareName)).Error())
 		}
 	}
 
 	err = handler.Delete(ctx, shareName)
 	if err != nil {
-		return &google_protobuf.Empty{}, grpc.Errorf(codes.Internal, errors.Wrap(err, fmt.Sprintf("can't delete share '%s'", shareName)).Error())
+		return &protobuf.Empty{}, grpc.Errorf(codes.Internal, errors.Wrap(err, fmt.Sprintf("can't delete share '%s'", shareName)).Error())
 	}
-	return &google_protobuf.Empty{}, nil
+	return &protobuf.Empty{}, nil
 }
 
 // List return the list of all available shares
-func (s *ShareListener) List(ctx context.Context, in *google_protobuf.Empty) (*pb.ShareList, error) {
+func (s *ShareListener) List(ctx context.Context, in *protobuf.Empty) (*pb.ShareList, error) {
 	log.Infof(">>> Listeners: share list '%v'", in)
 	defer log.Debugf("<<< Listeners: share list '%v'", in)
 
@@ -165,14 +168,14 @@ func (s *ShareListener) Mount(ctx context.Context, in *pb.ShareMountDefinition) 
 	handler := ShareHandler(tenant.Service)
 	mount, err := handler.Mount(ctx, shareName, in.GetHost().GetName(), in.GetPath(), in.GetWithCache())
 	if err != nil {
-		tbr := errors.Wrap(err, fmt.Sprintf("Can't mount share '%s'", shareName))
+		tbr := errors.Wrap(err, fmt.Sprintf("can't mount share '%s'", shareName))
 		return nil, grpc.Errorf(codes.Internal, tbr.Error())
 	}
 	return convert.ToPBShareMount(in.GetShare().GetName(), in.GetHost().GetName(), mount), nil
 }
 
 // Unmount unmounts share from the given host
-func (s *ShareListener) Unmount(ctx context.Context, in *pb.ShareMountDefinition) (*google_protobuf.Empty, error) {
+func (s *ShareListener) Unmount(ctx context.Context, in *pb.ShareMountDefinition) (*protobuf.Empty, error) {
 	log.Infof(">>> Listeners: share unmount '%v'", in)
 	defer log.Debugf("<<< Listeners: share unmount '%v'", in)
 
@@ -194,9 +197,9 @@ func (s *ShareListener) Unmount(ctx context.Context, in *pb.ShareMountDefinition
 	handler := ShareHandler(tenant.Service)
 	err := handler.Unmount(ctx, shareName, hostName)
 	if err != nil {
-		return &google_protobuf.Empty{}, grpc.Errorf(codes.Internal, errors.Wrap(err, fmt.Sprintf("Can't unmount share '%s'", shareName)).Error())
+		return &protobuf.Empty{}, grpc.Errorf(codes.Internal, errors.Wrap(err, fmt.Sprintf("can't unmount share '%s'", shareName)).Error())
 	}
-	return &google_protobuf.Empty{}, nil
+	return &protobuf.Empty{}, nil
 }
 
 // Inspect shows the detail of a share and all connected clients

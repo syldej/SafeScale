@@ -31,7 +31,7 @@ import (
 	libStack "github.com/CS-SI/SafeScale/lib/server/iaas/stacks/libvirt"
 )
 
-// provider is the providerementation of the local provider
+// provider is the provider implementation of the local provider
 type provider struct {
 	*libStack.Stack
 }
@@ -83,7 +83,7 @@ func (p *provider) Build(params map[string]interface{}) (providerapi.Provider, e
 	config.UseLayer3Networking = false
 	bucketName, err := objectstorage.BuildMetadataBucketName("local", "", "", "")
 	if err != nil {
-		return nil, fmt.Errorf("Failed to build metadata bucket name %v", err)
+		return nil, fmt.Errorf("failed to build metadata bucket name %v", err)
 	}
 	config.MetadataBucket = bucketName
 
@@ -104,7 +104,7 @@ func (p *provider) Build(params map[string]interface{}) (providerapi.Provider, e
 
 	uri, found := compute["uri"].(string)
 	if !found {
-		return nil, fmt.Errorf("Uri is not set")
+		return nil, fmt.Errorf("uri is not set")
 	}
 	imagesJSONPath, found := compute["imagesJSONPath"].(string)
 	if !found {
@@ -126,7 +126,7 @@ func (p *provider) Build(params map[string]interface{}) (providerapi.Provider, e
 
 	libvirtStack, err := libStack.New(authOptions, localConfig, config)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to create a new libvirt Stack : %v", err)
+		return nil, fmt.Errorf("failed to create a new libvirt Stack : %v", err)
 	}
 
 	localProvider := &provider{Stack: libvirtStack}
@@ -135,14 +135,14 @@ func (p *provider) Build(params map[string]interface{}) (providerapi.Provider, e
 }
 
 // GetAuthOpts returns authentification options as a Config
-func (p *provider) GetAuthOpts() (providers.Config, error) {
+func (p *provider) GetAuthenticationOptions() (providers.Config, error) {
 	cfg := resources.ConfigMap{}
 	cfg.Set("Region", "Local")
 	return cfg, nil
 }
 
 // GetCfgOpts returns configuration options as a Config
-func (p *provider) GetCfgOpts() (providers.Config, error) {
+func (p *provider) GetConfigurationOptions() (providers.Config, error) {
 	config := resources.ConfigMap{}
 
 	config.Set("AutoHostNetworkInterfaces", p.Config.AutoHostNetworkInterfaces)
@@ -154,8 +154,22 @@ func (p *provider) GetCfgOpts() (providers.Config, error) {
 	return config, nil
 }
 
-func (provider *provider) GetName() string {
+func (p *provider) GetName() string {
 	return "local"
+}
+
+// ListImages ...
+func (p *provider) ListImages(all bool) ([]resources.Image, error) {
+	return p.Stack.ListImages()
+}
+
+// ListTemplates ...
+func (p *provider) ListTemplates(all bool) ([]resources.HostTemplate, error) {
+	return p.Stack.ListTemplates()
+}
+
+func (p *provider) ListAvailabilityZones() (map[string]bool, error) {
+	return p.Stack.ListAvailabilityZones()
 }
 
 func init() {

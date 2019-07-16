@@ -90,14 +90,19 @@ func (s *Stack) CreateVolume(request resources.VolumeRequest) (*resources.Volume
 		return nil, fmt.Errorf("volume '%s' already exists", request.Name)
 	}
 
+	az, err := s.SelectedAvailabilityZone()
+	if err != nil {
+		return nil, err
+	}
 	opts := volumes.CreateOpts{
-		Name:       request.Name,
-		Size:       request.Size,
-		VolumeType: s.getVolumeType(request.Speed),
+		AvailabilityZone: az,
+		Name:             request.Name,
+		Size:             request.Size,
+		VolumeType:       s.getVolumeType(request.Speed),
 	}
 	vol, err := volumes.Create(s.Stack.VolumeClient, opts).Extract()
 	if err != nil {
-		return nil, fmt.Errorf("Error creating volume : %s", openstack.ProviderErrorToString(err))
+		return nil, fmt.Errorf("error creating volume : %s", openstack.ProviderErrorToString(err))
 	}
 	v := resources.Volume{
 		ID:    vol.ID,
@@ -138,7 +143,7 @@ func (s *Stack) ListVolumes() ([]resources.Volume, error) {
 	err := volumes.List(s.Stack.VolumeClient, volumes.ListOpts{}).EachPage(func(page pagination.Page) (bool, error) {
 		list, err := volumes.ExtractVolumes(page)
 		if err != nil {
-			log.Errorf("Error listing volumes: volume extraction: %+v", err)
+			log.Errorf("error listing volumes: volume extraction: %+v", err)
 			return false, err
 		}
 		for _, vol := range list {

@@ -23,7 +23,7 @@ import (
 )
 
 func (p *provider) requestOVHAPI(url string, httpCode string) (interface{}, error) {
-	authOpts, err := p.GetAuthOpts()
+	authOpts, err := p.GetAuthenticationOptions()
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +64,7 @@ func (p *provider) requestOVHAPI(url string, httpCode string) (interface{}, erro
 	case "DELETE":
 		return nil, fmt.Errorf("%s not implemented yet", httpCode)
 	default:
-		return nil, fmt.Errorf("Unexpected HTTP code : %s", httpCode)
+		return nil, fmt.Errorf("unexpected HTTP code : %s", httpCode)
 	}
 
 	return result, nil

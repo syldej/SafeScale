@@ -19,10 +19,10 @@ package utils
 import (
 	"math"
 
+	pb "github.com/CS-SI/SafeScale/lib"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/HostProperty"
 	propsv1 "github.com/CS-SI/SafeScale/lib/server/iaas/resources/properties/v1"
-	pb "github.com/CS-SI/SafeScale/lib"
 	"github.com/CS-SI/SafeScale/lib/system"
 )
 
@@ -199,16 +199,20 @@ func ToPBHost(in *resources.Host) *pb.Host {
 // ToPBHostDefinition ...
 func ToPBHostDefinition(in *resources.HostDefinition) *pb.HostDefinition {
 	return &pb.HostDefinition{
-		CpuCount: int32(in.Cores),
-		Ram:      in.RAMSize,
-		Disk:     int32(in.DiskSize),
-		GpuCount: int32(in.GPUNumber),
-		CpuFreq:  in.CPUFreq,
-		ImageId:  in.ImageID,
+		ImageId: in.ImageID,
+		Sizing: &pb.HostSizing{
+			MinCpuCount: int32(in.Cores),
+			MaxCpuCount: int32(in.Cores),
+			MinRamSize:  in.RAMSize,
+			MaxRamSize:  in.RAMSize,
+			MinDiskSize: int32(in.DiskSize),
+			GpuCount:    int32(in.GPUNumber),
+			MinCpuFreq:  in.CPUFreq,
+		},
 	}
 }
 
-// ToPBGatewayDefinition ...
+// ToPBGatewayDefinition converts a resources.HostDefinition tp .GatewayDefinition
 func ToPBGatewayDefinition(in *resources.HostDefinition) *pb.GatewayDefinition {
 	return &pb.GatewayDefinition{
 		Cpu:      int32(in.Cores),
@@ -218,6 +222,20 @@ func ToPBGatewayDefinition(in *resources.HostDefinition) *pb.GatewayDefinition {
 		GpuCount: int32(in.GPUNumber),
 		GpuType:  in.GPUType,
 	}
+}
+
+// FromPBHostDefinitionToPBGatewayDefinition converts a pb.HostDefinition to pb.GatewayDefinition
+func FromPBHostDefinitionToPBGatewayDefinition(in pb.HostDefinition) pb.GatewayDefinition {
+	def := pb.GatewayDefinition{
+		ImageId:  in.ImageId,
+		Cpu:      in.CpuCount,
+		Ram:      in.Ram,
+		Disk:     in.Disk,
+		GpuCount: in.GpuCount,
+		Sizing:   &pb.HostSizing{},
+	}
+	*def.Sizing = *in.Sizing
+	return def
 }
 
 // ToHostStatus ...
@@ -267,4 +285,30 @@ func ToPBFileList(fileNames []string, uploadDates []string, fileSizes []int64, f
 		files = append(files, &pb.File{Name: fileNames[i], Date: uploadDates[i], Size: fileSizes[i], Buckets: fileBuckets[i]})
 	}
 	return &pb.FileList{Files: files}
+}
+
+// ToPBHostSizing converts a protobuf HostSizing message to resources.SizingRequirements
+func ToPBHostSizing(src resources.SizingRequirements) pb.HostSizing {
+	return pb.HostSizing{
+		MinCpuCount: int32(src.MinCores),
+		MaxCpuCount: int32(src.MaxCores),
+		MinCpuFreq:  src.MinFreq,
+		GpuCount:    int32(src.MinGPU),
+		MinRamSize:  src.MinRAMSize,
+		MaxRamSize:  src.MaxRAMSize,
+		MinDiskSize: int32(src.MinDiskSize),
+	}
+}
+
+// FromPBHostSizing converts a protobuf HostSizing message to resources.SizingRequirements
+func FromPBHostSizing(src pb.HostSizing) resources.SizingRequirements {
+	return resources.SizingRequirements{
+		MinCores:    int(src.MinCpuCount),
+		MaxCores:    int(src.MaxCpuCount),
+		MinFreq:     src.MinCpuFreq,
+		MinGPU:      int(src.GpuCount),
+		MinRAMSize:  src.MinRamSize,
+		MaxRAMSize:  src.MaxRamSize,
+		MinDiskSize: int(src.MinDiskSize),
+	}
 }

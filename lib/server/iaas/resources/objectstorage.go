@@ -65,6 +65,13 @@ func NewRange(from, to int) Range {
 	return Range{&from, &to}
 }
 
+func (r *Range) OK() bool {
+	result := true
+	result = result && r.From != nil
+	result = result && r.To != nil
+	return result
+}
+
 func (r Range) String() string {
 	if r.From != nil && r.To != nil {
 		return fmt.Sprintf("%d-%d", *r.From, *r.To)

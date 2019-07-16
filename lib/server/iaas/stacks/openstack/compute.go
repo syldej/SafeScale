@@ -22,8 +22,11 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"github.com/davecgh/go-spew/spew"
 	"strings"
 	"time"
+
+	"github.com/gophercloud/gophercloud/openstack/identity/v3/regions"
 
 	"github.com/pkg/errors"
 	uuid "github.com/satori/go.uuid"
@@ -51,8 +54,39 @@ import (
 	"github.com/CS-SI/SafeScale/lib/utils/retry"
 )
 
+func (s *Stack) ListRegions() ([]string, error) {
+	log.Debug(">>> openstack.Client.ListRegions()")
+	defer log.Debug("<<< openstack.Client.ListRegions()")
+
+	var results []string
+
+	if s == nil {
+		panic("Calling method ListRegions from nil!")
+	}
+
+	listOpts := regions.ListOpts{
+		ParentRegionID: "RegionOne",
+	}
+
+	allPages, err := regions.List(s.ComputeClient, listOpts).AllPages()
+	if err != nil {
+		return results, err
+	}
+
+	allRegions, err := regions.ExtractRegions(allPages)
+	if err != nil {
+		return results, err
+	}
+
+	for _, reg := range allRegions {
+		results = append(results, reg.ID)
+	}
+
+	return results, nil
+}
+
 // ListAvailabilityZones lists the usable AvailabilityZones
-func (s *Stack) ListAvailabilityZones(all bool) (map[string]bool, error) {
+func (s *Stack) ListAvailabilityZones() (map[string]bool, error) {
 	log.Debug(">>> openstack.Client.ListAvailabilityZones()")
 	defer log.Debug("<<< openstack.Client.ListAvailabilityZones()")
 
@@ -72,7 +106,7 @@ func (s *Stack) ListAvailabilityZones(all bool) (map[string]bool, error) {
 
 	azList := map[string]bool{}
 	for _, zone := range content {
-		if all || zone.ZoneState.Available {
+		if zone.ZoneState.Available {
 			azList[zone.ZoneName] = zone.ZoneState.Available
 		}
 	}
@@ -80,7 +114,7 @@ func (s *Stack) ListAvailabilityZones(all bool) (map[string]bool, error) {
 }
 
 // ListImages lists available OS images
-func (s *Stack) ListImages(all bool) ([]resources.Image, error) {
+func (s *Stack) ListImages() ([]resources.Image, error) {
 	log.Debug(">>> stacks.openstack::ListImages()")
 	defer log.Debug("<<< stacks.openstack::ListImages()")
 
@@ -170,7 +204,7 @@ func (s *Stack) GetTemplate(id string) (*resources.HostTemplate, error) {
 
 // ListTemplates lists available Host templates
 // Host templates are sorted using Dominant Resource Fairness Algorithm
-func (s *Stack) ListTemplates(all bool) ([]resources.HostTemplate, error) {
+func (s *Stack) ListTemplates() ([]resources.HostTemplate, error) {
 	log.Debugf(">>> stacks.openstack::ListTemplates()")
 	defer log.Debugf("<<< stacks.openstack::ListTemplates()")
 
@@ -381,6 +415,9 @@ func (s *Stack) InspectHost(hostParam interface{}) (*resources.Host, error) {
 	default:
 		panic("openstack.Stack::InspectHost(): parameter 'hostParam' must be a string or a *resources.Host!")
 	}
+	if host == nil {
+		panic("openstack.Stack::InspectHost(): parameter 'hostParam' must be a string or a *resources.Host!")
+	}
 	hostRef := host.Name
 	if hostRef == "" {
 		hostRef = host.ID
@@ -412,7 +449,7 @@ func (s *Stack) InspectHost(hostParam interface{}) (*resources.Host, error) {
 					return err
 				}
 				// Any other error stops the retry
-				err = fmt.Errorf("Error getting host '%s': %s", host.ID, ProviderErrorToString(err))
+				err = fmt.Errorf("error getting host '%s': %s", host.ID, ProviderErrorToString(err))
 				return nil
 			}
 			if server.Status != "ERROR" && server.Status != "CREATING" {
@@ -439,6 +476,11 @@ func (s *Stack) InspectHost(hostParam interface{}) (*resources.Host, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	if !host.OK() {
+		log.Debugf("[TRACE] Unexpected host status: %s", spew.Sdump(host))
+	}
+
 	return host, nil
 }
 
@@ -605,6 +647,8 @@ func (s *Stack) complementHost(host *resources.Host, server *servers.Server) err
 					switch err.(type) {
 					case resources.ErrResourceNotFound:
 						log.Errorf(err.Error())
+					case utils.ErrNotFound:
+						log.Errorf(err.Error())
 					default:
 						log.Errorf("failed to get network '%s': %v", netid, err)
 					}
@@ -643,9 +687,9 @@ func (s *Stack) GetHostByName(name string) (*resources.Host, error) {
 	if r.Err != nil {
 		return nil, fmt.Errorf("failed to get data of host '%s': %v", name, r.Err)
 	}
-	servers, found := r.Body.(map[string]interface{})["servers"].([]interface{})
-	if found && len(servers) > 0 {
-		for _, anon := range servers {
+	serverList, found := r.Body.(map[string]interface{})["servers"].([]interface{})
+	if found && len(serverList) > 0 {
+		for _, anon := range serverList {
 			entry := anon.(map[string]interface{})
 			if entry["name"].(string) == name {
 				host := resources.NewHost()
@@ -752,7 +796,7 @@ func (s *Stack) CreateHost(request resources.HostRequest) (*resources.Host, *use
 	}
 
 	// Select useable availability zone, the first one in the list
-	az, err := s.SelectedAvailabilityZone()
+	azone, err := s.SelectedAvailabilityZone()
 	if err != nil {
 		return nil, userData, err
 	}
@@ -769,7 +813,7 @@ func (s *Stack) CreateHost(request resources.HostRequest) (*resources.Host, *use
 		FlavorRef:        request.TemplateID,
 		ImageRef:         request.ImageID,
 		UserData:         userDataPhase1,
-		AvailabilityZone: az,
+		AvailabilityZone: azone,
 	}
 
 	// --- Initializes resources.Host ---
@@ -870,7 +914,7 @@ func (s *Stack) CreateHost(request resources.HostRequest) (*resources.Host, *use
 				log.Debugf("Cleanup, deleting floating ip '%s'", ip.ID)
 				derr := floatingips.Delete(s.ComputeClient, ip.ID).ExtractErr()
 				if derr != nil {
-					log.Errorf("Error deleting Floating IP: %v", derr)
+					log.Errorf("error deleting Floating IP: %v", derr)
 				}
 			}
 		}()
@@ -907,16 +951,19 @@ func (s *Stack) CreateHost(request resources.HostRequest) (*resources.Host, *use
 // SelectedAvailabilityZone returns the selected availability zone
 func (s *Stack) SelectedAvailabilityZone() (string, error) {
 	if s.selectedAvailabilityZone == "" {
-		azList, err := s.ListAvailabilityZones(false)
-		if err != nil {
-			return "", err
+		s.selectedAvailabilityZone = s.GetAuthenticationOptions().AvailabilityZone
+		if s.selectedAvailabilityZone == "" {
+			azList, err := s.ListAvailabilityZones()
+			if err != nil {
+				return "", err
+			}
+			var azone string
+			for azone = range azList {
+				break
+			}
+			s.selectedAvailabilityZone = azone
 		}
-		var az string
-		for az = range azList {
-			break
-		}
-		s.selectedAvailabilityZone = az
-		log.Debugf("Selected Availability Zone: '%s'", az)
+		log.Debugf("Selected Availability Zone: '%s'", s.selectedAvailabilityZone)
 	}
 	return s.selectedAvailabilityZone, nil
 }
@@ -1178,7 +1225,7 @@ func (s *Stack) RebootHost(id string) error {
 		err = servers.Reboot(s.ComputeClient, id, servers.RebootOpts{Type: servers.HardReboot}).ExtractErr()
 	}
 	if err != nil {
-		ftErr := fmt.Errorf("Error rebooting host [%s]: %s", id, ProviderErrorToString(err))
+		ftErr := fmt.Errorf("error rebooting host [%s]: %s", id, ProviderErrorToString(err))
 		log.Debug(ftErr)
 		return errors.Wrap(err, ftErr.Error())
 	}

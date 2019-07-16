@@ -31,10 +31,10 @@ import (
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 
+	"github.com/CS-SI/SafeScale/lib/server/handlers"
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/IPVersion"
-	"github.com/CS-SI/SafeScale/lib/server/handlers"
 	"github.com/CS-SI/SafeScale/lib/server/metadata"
 	_ "github.com/CS-SI/SafeScale/lib/server/utils" // Imported to initialise tenants
 	"github.com/CS-SI/SafeScale/lib/utils"
@@ -115,20 +115,20 @@ func createCPUInfo(output string) (*CPUInfo, error) {
 	var err error
 	info.NumberOfCPU, err = strconv.Atoi(tokens[0])
 	if err != nil {
-		return nil, fmt.Errorf("Parsing error: NumberOfCPU='%s' (from '%s')", tokens[0], str)
+		return nil, fmt.Errorf("parsing error: NumberOfCPU='%s' (from '%s')", tokens[0], str)
 	}
 	info.NumberOfCore, err = strconv.Atoi(tokens[1])
 	if err != nil {
-		return nil, fmt.Errorf("Parsing error: NumberOfCore='%s' (from '%s')", tokens[1], str)
+		return nil, fmt.Errorf("parsing error: NumberOfCore='%s' (from '%s')", tokens[1], str)
 	}
 	info.NumberOfSocket, err = strconv.Atoi(tokens[2])
 	if err != nil {
-		return nil, fmt.Errorf("Parsing error: NumberOfSocket='%s' (from '%s')", tokens[2], str)
+		return nil, fmt.Errorf("parsing error: NumberOfSocket='%s' (from '%s')", tokens[2], str)
 	}
 	info.NumberOfCore = info.NumberOfCore * info.NumberOfSocket
 	info.CPUFrequency, err = strconv.ParseFloat(tokens[3], 64)
 	if err != nil {
-		return nil, fmt.Errorf("Parsing error: CpuFrequency='%s' (from '%s')", tokens[3], str)
+		return nil, fmt.Errorf("parsing error: CpuFrequency='%s' (from '%s')", tokens[3], str)
 	}
 	info.CPUFrequency = math.Floor(info.CPUFrequency*100) / 100000
 
@@ -137,7 +137,7 @@ func createCPUInfo(output string) (*CPUInfo, error) {
 	info.CPUModel = tokens[6]
 	info.RAMSize, err = strconv.ParseFloat(tokens[7], 64)
 	if err != nil {
-		return nil, fmt.Errorf("Parsing error: RAMSize='%s' (from '%s')", tokens[7], str)
+		return nil, fmt.Errorf("parsing error: RAMSize='%s' (from '%s')", tokens[7], str)
 	}
 
 	memInGb := info.RAMSize / 1024 / 1024
@@ -320,12 +320,12 @@ func analyzeTenant(group *sync.WaitGroup, theTenant string) error {
 			return errors.Wrapf(err, "Error waiting for server ready: %v", err)
 		}
 		if net == nil {
-			return errors.Errorf("Failure creating network")
+			return errors.Errorf("failure creating network")
 		}
 
 		_, err = metadata.SaveNetwork(serviceProvider, net)
 		if err != nil {
-			return errors.Errorf("Failure saving network metadata")
+			return errors.Errorf("failure saving network metadata")
 		}
 	}
 
@@ -479,7 +479,7 @@ func analyzeTenant(group *sync.WaitGroup, theTenant string) error {
 	return nil
 }
 
-func dumpTemplates(service *iaas.Service, tenant string) error {
+func dumpTemplates(service iaas.Service, tenant string) error {
 	_ = os.MkdirAll(utils.AbsPathify("$HOME/.safescale/scanner"), 0777)
 
 	type TemplateList struct {
@@ -509,7 +509,7 @@ func dumpTemplates(service *iaas.Service, tenant string) error {
 	return nil
 }
 
-func dumpImages(service *iaas.Service, tenant string) error {
+func dumpImages(service iaas.Service, tenant string) error {
 	_ = os.MkdirAll(utils.AbsPathify("$HOME/.safescale/scanner"), 0777)
 
 	type ImageList struct {

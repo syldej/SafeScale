@@ -21,7 +21,7 @@ import (
 
 	pb "github.com/CS-SI/SafeScale/lib"
 	"github.com/CS-SI/SafeScale/lib/server/utils"
-	google_protobuf "github.com/golang/protobuf/ptypes/empty"
+	protobuf "github.com/golang/protobuf/ptypes/empty"
 )
 
 // tenant is the part of safescale client handling tenants
@@ -37,7 +37,7 @@ func (t *tenant) List(timeout time.Duration) (*pb.TenantList, error) {
 	service := pb.NewTenantServiceClient(t.session.connection)
 	ctx := utils.GetContext(true)
 
-	return service.List(ctx, &google_protobuf.Empty{})
+	return service.List(ctx, &protobuf.Empty{})
 
 }
 
@@ -48,7 +48,7 @@ func (t *tenant) Get(timeout time.Duration) (*pb.TenantName, error) {
 	service := pb.NewTenantServiceClient(t.session.connection)
 	ctx := utils.GetContext(true)
 
-	return service.Get(ctx, &google_protobuf.Empty{})
+	return service.Get(ctx, &protobuf.Empty{})
 }
 
 // Set ...
@@ -69,7 +69,7 @@ func (t *tenant) StorageList(timeout time.Duration) (*pb.TenantList, error) {
 	service := pb.NewTenantServiceClient(t.session.connection)
 	ctx := utils.GetContext(true)
 
-	return service.StorageList(ctx, &google_protobuf.Empty{})
+	return service.StorageList(ctx, &protobuf.Empty{})
 }
 
 // StorageGet ...
@@ -79,7 +79,7 @@ func (t *tenant) StorageGet(timeout time.Duration) (*pb.TenantNameList, error) {
 	service := pb.NewTenantServiceClient(t.session.connection)
 	ctx := utils.GetContext(true)
 
-	return service.StorageGet(ctx, &google_protobuf.Empty{})
+	return service.StorageGet(ctx, &protobuf.Empty{})
 }
 
 // StorageSet ...

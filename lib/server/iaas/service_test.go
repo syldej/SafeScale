@@ -18,11 +18,13 @@ package iaas_test
 
 import (
 	"fmt"
+	servermocks "github.com/CS-SI/SafeScale/lib/server/iaas/mocks"
+	"github.com/CS-SI/SafeScale/lib/server/iaas/providers/aws"
+	"github.com/golang/mock/gomock"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
-	//"github.com/CS-SI/SafeScale/lib/server/iaas/providers/aws"
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/providers/cloudferro"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/providers/cloudwatt"
@@ -46,13 +48,13 @@ func TestParameters(t *testing.T) {
 }
 
 func TestGetService(t *testing.T) {
-	//	provider.Register("aws", &aws.Client{})
+	iaas.Register("aws", aws.New())
 	iaas.Register("ovh", ovh.New())
 	iaas.Register("cloudferro", cloudferro.New())
 	iaas.Register("cloudwatt", cloudwatt.New())
 	iaas.Register("flexibleEngine", flexibleengine.New())
 	iaas.Register("opentelekom", opentelekom.New())
-	ovh, err := iaas.UseService("TestOvh")
+	ovhService, err := iaas.UseService("TestOvh")
 	if err != nil {
 		t.Skip(err)
 	}
@@ -79,12 +81,13 @@ func TestGetService(t *testing.T) {
 		t.Skip(err)
 	}
 	require.Nil(t, err)
-	imgs, err := ovh.ListImages(true)
+	imgs, err := ovhService.ListImages(true)
 	require.Nil(t, err)
 	require.True(t, len(imgs) > 3)
 	//_, err = providers.GetService("TestCloudwatt")
 	//require.Nil(t, err)
 }
+
 func TestGetServiceErr(t *testing.T) {
 	createTenantFile()
 	defer deleteTenantFile()
@@ -100,4 +103,16 @@ func TestGetServiceErr(t *testing.T) {
 		t.Skip(err)
 	}
 	require.Error(t, err)
+}
+
+func TestListImages(t *testing.T) {
+	mockCtrl := gomock.NewController(t)
+	defer mockCtrl.Finish()
+
+	mockService := servermocks.NewMockService(mockCtrl)
+
+	mockService.EXPECT().ListRegions().Return([]string{"west", "east"}, nil).Times(1)
+
+	// Not directly mockable
+	_, _ = mockService.ListRegions()
 }

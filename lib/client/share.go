@@ -22,7 +22,7 @@ import (
 	pb "github.com/CS-SI/SafeScale/lib"
 	"github.com/CS-SI/SafeScale/lib/server/utils"
 
-	google_protobuf "github.com/golang/protobuf/ptypes/empty"
+	protobuf "github.com/golang/protobuf/ptypes/empty"
 )
 
 // share is the part of the safescale client handilng Shares
@@ -65,7 +65,7 @@ func (n *share) List(timeout time.Duration) (*pb.ShareList, error) {
 	service := pb.NewShareServiceClient(n.session.connection)
 	ctx := utils.GetContext(true)
 
-	list, err := service.List(ctx, &google_protobuf.Empty{})
+	list, err := service.List(ctx, &protobuf.Empty{})
 	if err != nil {
 		return nil, DecorateError(err, "list of shares", true)
 	}

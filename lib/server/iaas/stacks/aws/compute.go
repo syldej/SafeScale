@@ -1,47 +1,132 @@
-/*
- * Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 package aws
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
+	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/HostProperty"
+	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/HostState"
+	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/properties"
+	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/properties/v1"
+	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/userdata"
+	"github.com/CS-SI/SafeScale/lib/utils"
+	"github.com/CS-SI/SafeScale/lib/utils/retry"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/pricing"
-	"regexp"
-	"strconv"
+	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
+	"github.com/pkg/errors"
+	"github.com/satori/go.uuid"
+	"github.com/sirupsen/logrus"
 	"strings"
-
-	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
-	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/HostState"
-	"github.com/CS-SI/SafeScale/lib/system"
+	"time"
 )
 
-func wrapError(msg string, err error) error {
-	if err == nil {
-		return nil
+func (s *Stack) ListAvailabilityZones() (map[string]bool, error) {
+	zones := make(map[string]bool)
+
+	ro, err := s.EC2Service.DescribeAvailabilityZones(&ec2.DescribeAvailabilityZonesInput{})
+	if err != nil {
+		return zones, err
 	}
-	if aerr, ok := err.(awserr.Error); ok {
-		return fmt.Errorf("%s: cause by %s", msg, aerr.Message())
+	if ro != nil {
+		for _, zone := range ro.AvailabilityZones {
+			zoneName := aws.StringValue(zone.ZoneName)
+			if zoneName != "" {
+				zones[zoneName] = aws.StringValue(zone.State) == "available"
+			}
+		}
 	}
-	return err
+
+	return zones, nil
 }
+
+func (s *Stack) ListRegions() ([]string, error) {
+	var regions []string
+
+	ro, err := s.EC2Service.DescribeRegions(&ec2.DescribeRegionsInput{})
+	if err != nil {
+		return regions, err
+	}
+	if ro != nil {
+		for _, region := range ro.Regions {
+			regions = append(regions, region.String())
+		}
+	}
+
+	return regions, nil
+}
+
+func (s *Stack) GetImage(id string) (*resources.Image, error) {
+	imagesList, err := s.ListImages()
+	if err != nil {
+		return nil, err
+	}
+	for _, res := range imagesList {
+		if res.ID == id {
+			return &res, nil
+		}
+	}
+
+	return nil, resources.ResourceNotFoundError("Image", id)
+}
+
+func (s *Stack) GetTemplate(id string) (*resources.HostTemplate, error) {
+	template := resources.HostTemplate{}
+
+	prods, err := s.PricingService.GetProducts(&pricing.GetProductsInput{
+		Filters: []*pricing.Filter{
+			{
+				Field: aws.String("ServiceCode"),
+				Type:  aws.String("TERM_MATCH"),
+				Value: aws.String("AmazonEC2"),
+			},
+			{
+				Field: aws.String("operatingSystem"),
+				Type:  aws.String("TERM_MATCH"),
+				Value: aws.String("Linux"),
+			},
+			{
+				Field: aws.String("instanceType"),
+				Type:  aws.String("TERM_MATCH"),
+				Value: aws.String(id),
+			},
+		},
+		MaxResults:  aws.Int64(100),
+		ServiceCode: aws.String("AmazonEC2"),
+	})
+	if err != nil {
+		return &template, err
+	}
+
+	for _, price := range prods.PriceList {
+		jsonPrice, err := json.Marshal(price)
+		if err != nil {
+			continue
+		}
+		price := Price{}
+		err = json.Unmarshal(jsonPrice, &price)
+		if err != nil {
+			continue
+		}
+
+		tpl := resources.HostTemplate{
+			ID:        price.Product.Attributes.InstanceType,
+			Name:      price.Product.Attributes.InstanceType,
+			Cores:     ParseNumber(price.Product.Attributes.Vcpu, 1),
+			GPUNumber: ParseNumber(price.Product.Attributes.Gpu, 0),
+			DiskSize:  int(ParseStorage(price.Product.Attributes.Storage)),
+			RAMSize:   float32(ParseMemory(price.Product.Attributes.Memory)),
+		}
+
+		template = tpl
+		break
+	}
+
+	return &template, nil
+}
+
 
 func createFilters() []*ec2.Filter {
 	filters := []*ec2.Filter{
@@ -83,171 +168,49 @@ func createFilters() []*ec2.Filter {
 	return filters
 }
 
-// ListImages lists available OS images
-func (s *Stack) ListImages(all bool) ([]resources.Image, error) {
-	images, err := s.EC2.DescribeImages(&ec2.DescribeImagesInput{
-		//Owners: []*string{aws.String("aws-marketplace"), aws.String("self")},
-		Filters: createFilters(),
+// FIXME Orphan method
+func (s *Stack) ListImages() ([]resources.Image, error) {
+	var images []resources.Image
+
+	filters := []*ec2.Filter{
+		&ec2.Filter{
+			Name:   aws.String("architecture"),
+			Values: []*string{aws.String("x86_64")},
+		},
+		&ec2.Filter{
+			Name:   aws.String("state"),
+			Values: []*string{aws.String("available")},
+		},
+	}
+
+	// Added filtering by owner-id
+	filters = append(filters, createFilters()...)
+
+	iout, err := s.EC2Service.DescribeImages(&ec2.DescribeImagesInput{
+		Filters: filters,
 	})
 	if err != nil {
-		return nil, err
+		return images, err
 	}
-	var list []resources.Image
-	for _, img := range images.Images {
-		if img.Description == nil || strings.Contains(strings.ToUpper(*img.Name), "TEST") {
-			continue
+	if iout != nil {
+		for _, image := range iout.Images {
+			if image != nil {
+				images = append(images, resources.Image{
+					ID:   aws.StringValue(image.ImageId),
+					Name: aws.StringValue(image.Name),
+				})
+			}
 		}
-		list = append(list, resources.Image{
-			ID:   *img.ImageId,
-			Name: *img.Name,
-		})
 	}
 
-	return list, nil
+	return images, nil
 }
 
-//Attributes attributes of a compute instance
-type Attributes struct {
-	ClockSpeed                  string `json:"clockSpeed,omitempty"`
-	CurrentGeneration           string `json:"currentGeneration,omitempty"`
-	DedicatedEbsThroughput      string `json:"dedicatedEbsThroughput,omitempty"`
-	Ecu                         string `json:"ecu,omitempty"`
-	EnhancedNetworkingSupported string `json:"enhancedNetworkingSupported,omitempty"`
-	InstanceFamily              string `json:"instanceFamily,omitempty"`
-	InstanceType                string `json:"instanceType,omitempty"`
-	LicenseModel                string `json:"licenseModel,omitempty"`
-	Location                    string `json:"location,omitempty"`
-	LocationType                string `json:"locationType,omitempty"`
-	Memory                      string `json:"memory,omitempty"`
-	MetworkPerformance          string `json:"metworkPerformance,omitempty"`
-	NormalizationSizeFactor     string `json:"normalizationSizeFactor,omitempty"`
-	OperatingSystem             string `json:"operatingSystem,omitempty"`
-	Operation                   string `json:"operation,omitempty"`
-	PhysicalProcessor           string `json:"physicalProcessor,omitempty"`
-	PreInstalledSw              string `json:"preInstalled_sw,omitempty"`
-	ProcessorArchitecture       string `json:"processorArchitecture,omitempty"`
-	ProcessorFeatures           string `json:"processorFeatures,omitempty"`
-	Servicecode                 string `json:"servicecode,omitempty"`
-	Servicename                 string `json:"servicename,omitempty"`
-	Storage                     string `json:"storage,omitempty"`
-	Tenancy                     string `json:"tenancy,omitempty"`
-	Usagetype                   string `json:"usagetype,omitempty"`
-	Vcpu                        string `json:"vcpu,omitempty"`
-}
+// FIXME Orphan method
+func (s *Stack) ListTemplates() ([]resources.HostTemplate, error) {
+	var templates []resources.HostTemplate
 
-//Product compute instance product
-type Product struct {
-	Attributes    Attributes `json:"attributes,omitempty"`
-	ProductFamily string     `json:"productFamily,omitempty"`
-	Sku           string     `json:"sku,omitempty"`
-}
-
-// PriceDimension compute instance price related to term condition
-type PriceDimension struct {
-	AppliesTo    []string           `json:"appliesTo,omitempty"`
-	BeginRange   string             `json:"beginRange,omitempty"`
-	Description  string             `json:"description,omitempty"`
-	EndRange     string             `json:"endRange,omitempty"`
-	PricePerUnit map[string]float32 `json:"pricePerUnit,omitempty"`
-	RateCode     string             `json:"RateCode,omitempty"`
-	Unit         string             `json:"Unit,omitempty"`
-}
-
-// PriceDimensions compute instance price dimensions
-type PriceDimensions struct {
-	PriceDimensionMap map[string]PriceDimension `json:"price_dimension_map,omitempty"`
-}
-
-// TermAttributes compute instance terms
-type TermAttributes struct {
-	LeaseContractLength string `json:"leaseContractLength,omitempty"`
-	OfferingClass       string `json:"offeringClass,omitempty"`
-	PurchaseOption      string `json:"purchaseOption,omitempty"`
-}
-
-// Card compute instance price card
-type Card struct {
-	EffectiveDate   string          `json:"effectiveDate,omitempty"`
-	OfferTermCode   string          `json:"offerTermCode,omitempty"`
-	PriceDimensions PriceDimensions `json:"priceDimensions,omitempty"`
-	Sku             string          `json:"sku,omitempty"`
-	TermAttributes  TermAttributes  `json:"termAttributes,omitempty"`
-}
-
-// OnDemand on demand compute instance cards
-type OnDemand struct {
-	Cards map[string]Card
-}
-
-// Reserved reserved compute instance cards
-type Reserved struct {
-	Cards map[string]Card `json:"cards,omitempty"`
-}
-
-//Terms compute instance prices terms
-type Terms struct {
-	OnDemand OnDemand `json:"onDemand,omitempty"`
-	Reserved Reserved `json:"reserved,omitempty"`
-}
-
-//Price Compute instance price information
-type Price struct {
-	Product         Product `json:"product,omitempty"`
-	PublicationDate string  `json:"publicationDate,omitempty"`
-	ServiceCode     string  `json:"serviceCode,omitempty"`
-	Terms           Terms   `json:"terms,omitempty"`
-}
-
-
-func (s *Stack) ListAvailabilityZones(bool) (map[string]bool, error) {
-	panic("implement me")
-}
-
-
-func (s *Stack) GetNetworkByName(name string) (*resources.Network, error) {
-	panic("implement me")
-}
-
-
-func (s *Stack) GetHostByName(string) (*resources.Host, error) {
-	panic("implement me")
-}
-
-func (s *Stack) GetHostState(interface{}) (HostState.Enum, error) {
-	panic("implement me")
-}
-
-
-func (s *Stack) RebootHost(id string) error {
-	panic("implement me")
-}
-
-func (s *Stack) ResizeHost(id string, request resources.SizingRequirements) (*resources.Host, error) {
-	panic("implement me")
-}
-
-
-// GetImage returns the Image referenced by id
-func (s *Stack) GetImage(id string) (*resources.Image, error) {
-	images, err := s.EC2.DescribeImages(&ec2.DescribeImagesInput{
-		ImageIds: []*string{aws.String(id)},
-	})
-	if err != nil {
-		return nil, err
-	}
-	if len(images.Images) == 0 {
-		return nil, fmt.Errorf("Image %s does not exist", id)
-	}
-	img := images.Images[0]
-	return &resources.Image{
-		ID:   *img.ImageId,
-		Name: *img.Name,
-	}, nil
-}
-
-// GetTemplate returns the Template referenced by id
-func (s *Stack) GetTemplate(id string) (*resources.HostTemplate, error) {
-	input := pricing.GetProductsInput{
+	prods, err := s.PricingService.GetProducts(&pricing.GetProductsInput{
 		Filters: []*pricing.Filter{
 			{
 				Field: aws.String("ServiceCode"),
@@ -255,38 +218,21 @@ func (s *Stack) GetTemplate(id string) (*resources.HostTemplate, error) {
 				Value: aws.String("AmazonEC2"),
 			},
 			{
-				Field: aws.String("location"),
-				Type:  aws.String("TERM_MATCH"),
-				Value: aws.String("US East (Ohio)"),
-			},
-
-			{
-				Field: aws.String("preInstalledSw"),
-				Type:  aws.String("TERM_MATCH"),
-				Value: aws.String("NA"),
-			},
-			{
 				Field: aws.String("operatingSystem"),
 				Type:  aws.String("TERM_MATCH"),
 				Value: aws.String("Linux"),
 			},
-
-			{
-				Field: aws.String("instanceType"),
-				Type:  aws.String("TERM_MATCH"),
-				Value: aws.String(id),
-			},
 		},
-		FormatVersion: aws.String("aws_v1"),
-		MaxResults:    aws.Int64(100),
-		ServiceCode:   aws.String("AmazonEC2"),
+		MaxResults:  aws.Int64(100),
+		ServiceCode: aws.String("AmazonEC2"),
+	})
+	if err != nil {
+		return templates, err
 	}
 
-	p, err := s.Pricing.GetProducts(&input)
-	if err != nil {
-		return nil, err
-	}
-	for _, price := range p.PriceList {
+	hostTemplates := make(map[string]resources.HostTemplate)
+
+	for _, price := range prods.PriceList {
 		jsonPrice, err := json.Marshal(price)
 		if err != nil {
 			continue
@@ -296,286 +242,440 @@ func (s *Stack) GetTemplate(id string) (*resources.HostTemplate, error) {
 		if err != nil {
 			continue
 		}
-		if strings.Contains(price.Product.Attributes.Usagetype, "USE2-BoxUsage:") {
-			cores, err := strconv.Atoi(price.Product.Attributes.Vcpu)
+
+		tpl := resources.HostTemplate{
+			ID:        price.Product.Attributes.InstanceType,
+			Name:      price.Product.Attributes.InstanceType,
+			Cores:     ParseNumber(price.Product.Attributes.Vcpu, 1),
+			GPUNumber: ParseNumber(price.Product.Attributes.Gpu, 0),
+			DiskSize:  int(ParseStorage(price.Product.Attributes.Storage)),
+			RAMSize:   float32(ParseMemory(price.Product.Attributes.Memory)),
+		}
+
+		hostTemplates[price.Product.Attributes.InstanceType] = tpl
+	}
+
+	for _, v := range hostTemplates {
+		templates = append(templates, v)
+	}
+
+	return templates, nil
+}
+
+// WaitHostReady waits an host achieve ready state
+// hostParam can be an ID of host, or an instance of *resources.Host; any other type will panic
+func (s *Stack) WaitHostReady(hostParam interface{}, timeout time.Duration) (*resources.Host, error) {
+	if s == nil {
+		panic("Calling s.WaitHostReady with s==nil!")
+	}
+
+	var (
+		host *resources.Host
+	)
+	switch hostParam.(type) {
+	case string:
+		host = resources.NewHost()
+		host.ID = hostParam.(string)
+	case *resources.Host:
+		host = hostParam.(*resources.Host)
+	default:
+		panic("hostParam must be a string or a *resources.Host!")
+	}
+	logrus.Debugf(">>> stacks.gcp::WaitHostReady(%s)", host.ID)
+	defer logrus.Debugf("<<< stacks.gcp::WaitHostReady(%s)", host.ID)
+
+	retryErr := retry.WhileUnsuccessful(
+		func() error {
+			hostTmp, err := s.InspectHost(host)
 			if err != nil {
-				continue
+				return err
 			}
 
-			tpl := resources.HostTemplate{
-				ID:       price.Product.Attributes.InstanceType,
-				Name:     price.Product.Attributes.InstanceType,
-				Cores:    cores,
-				DiskSize: int(parseStorage(price.Product.Attributes.Storage)),
-				RAMSize:  float32(parseMemory(price.Product.Attributes.Memory)),
+			host = hostTmp
+			if host.LastState != HostState.STARTED {
+				return fmt.Errorf("not in ready state (current state: %s)", host.LastState.String())
 			}
-			return &tpl, nil
+			return nil
+		},
+		utils.GetDefaultDelay(),
+		timeout,
+	)
+	if retryErr != nil {
+		if _, ok := retryErr.(retry.ErrTimeout); ok {
+			return host, fmt.Errorf("timeout waiting to get host '%s' information after %v", host.Name, timeout)
+		}
+		return host, retryErr
+	}
+	return host, nil
+}
+
+func (s *Stack) CreateHost(request resources.HostRequest) (host *resources.Host, userData *userdata.Content, err error) {
+	userData = userdata.NewContent()
+
+	resourceName := request.ResourceName
+	networks := request.Networks
+	hostMustHavePublicIP := request.PublicIP
+
+	if networks == nil || len(networks) == 0 {
+		return nil, userData, fmt.Errorf("the host %s must be on at least one network (even if public)", resourceName)
+	}
+
+	// If no key pair is supplied create one
+	if request.KeyPair == nil {
+		id, err := uuid.NewV4()
+		if err != nil {
+			msg := fmt.Sprintf("failed to create host UUID: %+v", err)
+			logrus.Debugf(utils.Capitalize(msg))
+			return nil, userData, fmt.Errorf(msg)
+		}
+
+		name := fmt.Sprintf("%s_%s", request.ResourceName, id)
+		request.KeyPair, err = s.CreateKeyPair(name)
+		if err != nil {
+			msg := fmt.Sprintf("failed to create host key pair: %+v", err)
+			logrus.Debugf(utils.Capitalize(msg))
+			return nil, userData, fmt.Errorf(msg)
 		}
 	}
-	return nil, fmt.Errorf("Unable to find template %s", id)
 
-}
-
-func parseStorage(str string) float64 {
-	r, _ := regexp.Compile("([0-9]*) x ([0-9]*(\\.|,)?[0-9]*) ?([a-z A-Z]*)?")
-	b := bytes.Buffer{}
-	b.WriteString(str)
-	tokens := r.FindAllStringSubmatch(str, -1)
-	if len(tokens) <= 0 || len(tokens[0]) <= 1 {
-		return 0.0
+	// If no password is provided, create one
+	if request.Password == "" {
+		password, err := utils.GeneratePassword(16)
+		if err != nil {
+			return nil, userData, fmt.Errorf("failed to generate password: %s", err.Error())
+		}
+		request.Password = password
 	}
-	factor, err := strconv.ParseFloat(tokens[0][1], 64)
+
+	// The Default Network is the first of the provided list, by convention
+	defaultNetwork := request.Networks[0]
+	defaultNetworkID := defaultNetwork.ID
+	defaultGateway := request.DefaultGateway
+	isGateway := defaultGateway == nil && defaultNetwork.Name != resources.SingleHostNetworkName
+	defaultGatewayID := ""
+	defaultGatewayPrivateIP := ""
+	if defaultGateway != nil {
+		err := defaultGateway.Properties.LockForRead(HostProperty.NetworkV1).ThenUse(func(v interface{}) error {
+			hostNetworkV1 := v.(*propertiesv1.HostNetwork)
+			defaultGatewayPrivateIP = hostNetworkV1.IPv4Addresses[defaultNetworkID]
+			defaultGatewayID = defaultGateway.ID
+			return nil
+		})
+		if err != nil {
+			return nil, userData, errors.Wrap(err, "")
+		}
+	}
+
+	if defaultGateway == nil && !hostMustHavePublicIP {
+		return nil, userData, fmt.Errorf("the host %s must have a gateway or be public", resourceName)
+	}
+
+	var nets []servers.Network
+
+	// FIXME add provider network to host networks ?
+
+	// Add private networks
+	for _, n := range request.Networks {
+		nets = append(nets, servers.Network{
+			UUID: n.ID,
+		})
+	}
+
+	// --- prepares data structures for Provider usage ---
+
+	// Constructs userdata content
+	err = userData.Prepare(*s.Config, request, defaultNetwork.CIDR, "")
 	if err != nil {
-		return 0.0
-	}
-	sizeStr := strings.Replace(tokens[0][2], ",", "", -1)
-	size, err := strconv.ParseFloat(sizeStr, 64)
-	if err != nil {
-		return 0.0
-	}
-	if size < 10 {
-		size = size * 1000
-	}
-	//	fmt.Println((factor * size))
-	return factor * size
-}
-
-func parseMemory(str string) float64 {
-	r, err := regexp.Compile("([0-9]*(\\.|,)?[0-9]*) ?([a-z A-Z]*)?")
-	if err != nil {
-		return 0.0
-	}
-	b := bytes.Buffer{}
-	b.WriteString(str)
-	tokens := r.FindAllStringSubmatch(str, -1)
-	sizeStr := strings.Replace(tokens[0][1], ",", "", -1)
-	size, err := strconv.ParseFloat(sizeStr, 64)
-	if err != nil {
-		return 0.0
+		msg := fmt.Sprintf("failed to prepare user data content: %+v", err)
+		logrus.Debugf(utils.Capitalize(msg))
+		return nil, userData, fmt.Errorf(msg)
 	}
 
-	//	fmt.Println((factor * size))
-	return size
-}
+	// Determine system disk size based on vcpus count
+	template, err := s.GetTemplate(request.TemplateID)
+	if err != nil {
+		return nil, userData, fmt.Errorf("failed to get image: %s", err)
+	}
 
-// ListTemplates lists available host templates
-//Host templates are sorted using Dominant Resource Fairness Algorithm
-func (s *Stack) ListTemplates(all bool) ([]resources.HostTemplate, error) {
-	input := pricing.GetProductsInput{
-		Filters: []*pricing.Filter{
-			{
-				Field: aws.String("ServiceCode"),
-				Type:  aws.String("TERM_MATCH"),
-				Value: aws.String("AmazonEC2"),
-			},
-			{
-				Field: aws.String("location"),
-				Type:  aws.String("TERM_MATCH"),
-				Value: aws.String("US East (Ohio)"),
-			},
-			{
-				Field: aws.String("preInstalledSw"),
-				Type:  aws.String("TERM_MATCH"),
-				Value: aws.String("NA"),
-			},
-			{
-				Field: aws.String("operatingSystem"),
-				Type:  aws.String("TERM_MATCH"),
-				Value: aws.String("Linux"),
-			},
+	rim, err := s.GetImage(request.ImageID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	logrus.Debugf("Selected template: '%s', '%s'", template.ID, template.Name)
+
+	// Select usable availability zone, the first one in the list
+	if s.AwsConfig.Zone == "" {
+		azList, err := s.ListAvailabilityZones()
+		if err != nil {
+			return nil, userData, err
+		}
+		var az string
+		for az = range azList {
+			break
+		}
+		s.AwsConfig.Zone = az
+		logrus.Debugf("Selected Availability Zone: '%s'", az)
+	}
+
+	// Sets provider parameters to create host
+	userDataPhase1, err := userData.Generate("phase1")
+	if err != nil {
+		return nil, userData, err
+	}
+
+	// --- Initializes resources.Host ---
+
+	host = resources.NewHost()
+	host.PrivateKey = request.KeyPair.PrivateKey // Add PrivateKey to host definition
+	host.Password = request.Password
+
+	err = host.Properties.LockForWrite(HostProperty.NetworkV1).ThenUse(func(v interface{}) error {
+		hostNetworkV1 := v.(*propertiesv1.HostNetwork)
+		hostNetworkV1.DefaultNetworkID = defaultNetworkID
+		hostNetworkV1.DefaultGatewayID = defaultGatewayID
+		hostNetworkV1.DefaultGatewayPrivateIP = defaultGatewayPrivateIP
+		hostNetworkV1.IsGateway = isGateway
+		return nil
+	})
+	if err != nil {
+		return nil, userData, err
+	}
+
+	// Adds Host property SizingV1
+	err = host.Properties.LockForWrite(HostProperty.SizingV1).ThenUse(func(v interface{}) error {
+		hostSizingV1 := v.(*propertiesv1.HostSizing)
+		// Note: from there, no idea what was the RequestedSize; caller will have to complement this information
+		hostSizingV1.Template = request.TemplateID
+		hostSizingV1.AllocatedSize = properties.ModelHostTemplateToPropertyHostSize(template)
+		return nil
+	})
+	if err != nil {
+		return nil, userData, err
+	}
+
+	// --- query provider for host creation ---
+
+	logrus.Debugf("requesting host resource creation...")
+	var desistError error
+
+	// Retry creation until success, for 10 minutes
+	err = retry.WhileUnsuccessfulDelay5Seconds(
+		func() error {
+
+			server, err := buildAwsMachine(s.EC2Service, request.ResourceName, rim.ID, s.AwsConfig.Zone, defaultNetwork.Name, string(userDataPhase1), isGateway, template)
+			if err != nil {
+				if server != nil {
+					killErr := s.DeleteHost(server.ID)
+					if killErr != nil {
+						return errors.Wrap(err, killErr.Error())
+					}
+				}
+
+				if isAWSErr(err) {
+					desistError = err
+					return nil
+				}
+
+				logrus.Warnf("error creating host: %+v", err)
+				return err
+			}
+
+			if server == nil {
+				return fmt.Errorf("failed to create server")
+			}
+
+			host.ID = server.ID
+			host.Name = server.Name
+
+			// Wait that Host is ready, not just that the build is started
+			_, err = s.WaitHostReady(host, utils.GetLongOperationTimeout())
+			if err != nil {
+				killErr := s.DeleteHost(host.ID)
+				if killErr != nil {
+					return errors.Wrap(err, killErr.Error())
+				}
+				return err
+			}
+			return nil
 		},
-		FormatVersion: aws.String("aws_v1"),
-		MaxResults:    aws.Int64(100),
-		ServiceCode:   aws.String("AmazonEC2"),
+		utils.GetLongOperationTimeout(),
+	)
+	if err != nil {
+		return nil, userData, errors.Wrap(err, fmt.Sprintf("Error creating host: timeout"))
 	}
-	tpls := []resources.HostTemplate{}
-	//prices := map[string]interface{}{}
-	err := s.Pricing.GetProductsPages(&input,
-		func(p *pricing.GetProductsOutput, lastPage bool) bool {
-			for _, price := range p.PriceList {
-				jsonPrice, err := json.Marshal(price)
-				if err != nil {
-					continue
-				}
-				price := Price{}
-				err = json.Unmarshal(jsonPrice, &price)
-				if err != nil {
-					continue
-				}
-				if strings.Contains(price.Product.Attributes.Usagetype, "USE2-BoxUsage:") {
-					cores, err := strconv.Atoi(price.Product.Attributes.Vcpu)
-					if err != nil {
-						continue
-					}
+	if desistError != nil {
+		return nil, userData, resources.ResourceAccessDeniedError(request.ResourceName, fmt.Sprintf("Error creating host: %s", desistError.Error()))
+	}
 
-					tpl := resources.HostTemplate{
-						ID:       price.Product.Attributes.InstanceType,
-						Name:     price.Product.Attributes.InstanceType,
-						Cores:    cores,
-						DiskSize: int(parseStorage(price.Product.Attributes.Storage)),
-						RAMSize:  float32(parseMemory(price.Product.Attributes.Memory)),
-					}
-					tpls = append(tpls, tpl)
+	logrus.Debugf("host resource created.")
+
+	// Starting from here, delete host if exiting with error
+	defer func() {
+		if err != nil {
+			logrus.Infof("Cleanup, deleting host '%s'", host.Name)
+			derr := s.DeleteHost(host.ID)
+			if derr != nil {
+				logrus.Warnf("Error deleting host: %v", derr)
+			}
+		}
+	}()
+
+	if host == nil {
+		panic("Unexpected nil host")
+	}
+
+	if !host.OK() {
+		logrus.Warnf("Missing data in host: %v", host)
+	}
+
+	return host, userData, nil
+
+}
+
+// Returns true if the error is of type awserr.Error
+func isSpecificAWSErr(err error, code string, message string) bool {
+	if err, ok := err.(awserr.Error); ok {
+		logrus.Warnf("Received AWS error code: %d", err.Code())
+		return err.Code() == code && strings.Contains(err.Message(), message)
+	}
+	return false
+}
+
+/*
+Returns true if the error matches all these conditions:
+- err if of type awserr.Error
+- Error.Code() matches code
+- Error.Message() contains message
+ */
+func isAWSErr(err error) bool {
+	if err, ok := err.(awserr.Error); ok {
+		logrus.Warnf("Received AWS error code: %d", err.Code())
+		return true
+	}
+
+	return false
+}
+
+func buildAwsMachine(EC2Service *ec2.EC2, name string, imageId string, s3 string, s4 string, s5 string, b bool, template *resources.HostTemplate) (*resources.Host, error) {
+	//Run instance
+	out, err := EC2Service.RunInstances(&ec2.RunInstancesInput{
+		ImageId:      aws.String(imageId),
+		KeyName:      aws.String(name),
+		InstanceType: aws.String(template.ID),
+		MaxCount:     aws.Int64(1),
+		MinCount:     aws.Int64(1),
+		// TagSpecifications: []*ec2.TagSpecification{
+		// 	{
+		// 		Tags: []*ec2.Tag{
+		// 			{
+		// 				Key:   aws.String("Name"),
+		// 				Value: aws.String(request.Name),
+		// 			},
+		// 		},
+		// 	},
+		// },
+	})
+	if err != nil {
+		if isAWSErr(err) {
+			return nil, err
+		}
+		return nil, err
+	}
+	instance := out.Instances[0]
+
+	host := resources.Host{
+		ID:   aws.StringValue(instance.InstanceId),
+		Name: name,
+	}
+	return &host, nil
+}
+
+func (s *Stack) InspectHost(interface{}) (*resources.Host, error) {
+	panic("implement me")
+}
+
+func (s *Stack) GetHostByName(string) (*resources.Host, error) {
+	panic("implement me")
+}
+
+func (s *Stack) GetHostState(interface{}) (HostState.Enum, error) {
+	panic("implement me")
+}
+
+func (s *Stack) ListHosts() ([]*resources.Host, error) {
+	var hosts []*resources.Host
+
+	dio, err := s.EC2Service.DescribeInstances(&ec2.DescribeInstancesInput{})
+	if err != nil {
+		return hosts, err
+	}
+
+	for _, reservation := range dio.Reservations {
+		if reservation != nil {
+			for _, instance := range reservation.Instances {
+				if instance != nil {
+					state, _ := getState(instance.State)
+					hosts = append(hosts, &resources.Host{
+						ID:         aws.StringValue(instance.InstanceId),
+						Name:       "",
+						LastState:  state,
+						Properties: nil, // FIXME Problems here
+					})
 				}
 			}
-			return lastPage
-		})
-	if err != nil {
-		return nil, err
+		}
 	}
-	return tpls, nil
+
+	return hosts, nil
 }
 
-// CreateKeyPair creates and import a key pair
-func (s *Stack) CreateKeyPair(name string) (*resources.KeyPair, error) {
-	publicKey, privateKey, err := system.CreateKeyPair()
-	if err != nil {
-		return nil, err
-	}
-	s.EC2.ImportKeyPair(&ec2.ImportKeyPairInput{
-		KeyName:           aws.String(name),
-		PublicKeyMaterial: publicKey,
-	})
-	// out, err := c.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{
-	// 	KeyName: aws.String(name),
-	// })
-	if err != nil {
-		return nil, err
-	}
-	return &resources.KeyPair{
-		ID:         name,
-		Name:       name,
-		PrivateKey: string(privateKey),
-		PublicKey:  string(publicKey),
-	}, nil
-}
-
-func pStr(s *string) string {
-	if s == nil {
-		var s string
-		return s
-	}
-	return *s
-}
-
-// GetKeyPair returns the key pair identified by id
-func (s *Stack) GetKeyPair(id string) (*resources.KeyPair, error) {
-	out, err := s.EC2.DescribeKeyPairs(&ec2.DescribeKeyPairsInput{
-		KeyNames: []*string{aws.String(id)},
+func (s *Stack) DeleteHost(id string) error {
+	ips, err := s.EC2Service.DescribeAddresses(&ec2.DescribeAddressesInput{
+		Filters: []*ec2.Filter{
+			&ec2.Filter{
+				Name:   aws.String("instance-id"),
+				Values: []*string{aws.String(id)},
+			},
+		},
 	})
 	if err != nil {
-		return nil, err
+		if ips != nil {
+			for _, ip := range ips.Addresses {
+				_, _ = s.EC2Service.ReleaseAddress(&ec2.ReleaseAddressInput{
+					AllocationId: ip.AllocationId,
+				})
+			}
+		}
 	}
-	kp := out.KeyPairs[0]
-	return &resources.KeyPair{
-		ID:         pStr(kp.KeyName),
-		Name:       pStr(kp.KeyName),
-		PrivateKey: "",
-		PublicKey:  pStr(kp.KeyFingerprint),
-	}, nil
-}
-
-// ListKeyPairs lists available key pairs
-func (s *Stack) ListKeyPairs() ([]resources.KeyPair, error) {
-	out, err := s.EC2.DescribeKeyPairs(&ec2.DescribeKeyPairsInput{})
-	if err != nil {
-		return nil, err
-	}
-	keys := []resources.KeyPair{}
-	for _, kp := range out.KeyPairs {
-		keys = append(keys, resources.KeyPair{
-			ID:         pStr(kp.KeyName),
-			Name:       pStr(kp.KeyName),
-			PrivateKey: "",
-			PublicKey:  pStr(kp.KeyFingerprint),
-		})
-
-	}
-	return keys, nil
-}
-
-// DeleteKeyPair deletes the key pair identified by id
-func (s *Stack) DeleteKeyPair(id string) error {
-	_, err := s.EC2.DeleteKeyPair(&ec2.DeleteKeyPairInput{
-		KeyName: aws.String(id),
+	_, err = s.EC2Service.TerminateInstances(&ec2.TerminateInstancesInput{
+		InstanceIds: []*string{aws.String(id)},
 	})
 	return err
 }
 
-func getState(state *ec2.InstanceState) (HostState.Enum, error) {
-	// The low byte represents the state. The high byte is an opaque internal value
-	// and should be ignored.
-	//
-	//    * 0 : pending
-	//
-	//    * 16 : running
-	//
-	//    * 32 : shutting-down
-	//
-	//    * 48 : terminated
-	//
-	//    * 64 : stopping
-	//
-	//    * 80 : stopped
-	fmt.Println("State", state.Code)
-	if state == nil {
-		return HostState.ERROR, fmt.Errorf("unexpected host state")
-	}
-	if *state.Code == 0 {
-		return HostState.STARTING, nil
-	}
-	if *state.Code == 16 {
-		return HostState.STARTED, nil
-	}
-	if *state.Code == 32 {
-		return HostState.STOPPING, nil
-	}
-	if *state.Code == 48 {
-		return HostState.STOPPED, nil
-	}
-	if *state.Code == 64 {
-		return HostState.STOPPING, nil
-	}
-	if *state.Code == 80 {
-		return HostState.STOPPED, nil
-	}
-	return HostState.ERROR, fmt.Errorf("unexpected host state")
-}
-
-// CreateHost creates an host that fulfils the request
-func (s *Stack) CreateHost(request resources.HostRequest) (*resources.Host, error) {
-	panic("implement me")
-}
-
-// GetHost returns the host identified by id
-func (s *Stack) InspectHost(id interface{}) (*resources.Host, error) {
-	panic("implement me")
-}
-
-// ListHosts lists available hosts
-func (s *Stack) ListHosts() ([]*resources.Host, error) {
-	panic("implement me")
-}
-
-// DeleteHost deletes the host identified by id
-func (s *Stack) DeleteHost(id string) error {
-	panic("implement me")
-
-}
-
-// StopHost stops the host identified by id
 func (s *Stack) StopHost(id string) error {
-	_, err := s.EC2.StopInstances(&ec2.StopInstancesInput{
+	_, err := s.EC2Service.StopInstances(&ec2.StopInstancesInput{
 		Force:       aws.Bool(true),
 		InstanceIds: []*string{aws.String(id)},
 	})
 	return err
 }
 
-// StartHost starts the host identified by id
 func (s *Stack) StartHost(id string) error {
-	_, err := s.EC2.StartInstances(&ec2.StartInstancesInput{
+	_, err := s.EC2Service.StartInstances(&ec2.StartInstancesInput{
 		InstanceIds: []*string{aws.String(id)},
 	})
 	return err
+}
+
+func (s *Stack) RebootHost(id string) error {
+	_, err := s.EC2Service.RebootInstances(&ec2.RebootInstancesInput{
+		InstanceIds: []*string{aws.String(id)},
+	})
+	return err
+}
+
+func (s *Stack) ResizeHost(id string, request resources.SizingRequirements) (*resources.Host, error) {
+	panic("implement me")
 }

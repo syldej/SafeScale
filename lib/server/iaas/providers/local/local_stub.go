@@ -20,6 +20,7 @@ package local
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/providers"
@@ -47,14 +48,19 @@ type CfgOptions struct {
 func (provider *provider) Build(params map[string]interface{}) (providerapi.Provider, error) {
 	return nil, fmt.Errorf(errorStr)
 }
-func (provider *provider) GetAuthOpts() (providers.Config, error) {
+func (provider *provider) GetAuthenticationOptions() (providers.Config, error) {
 	return nil, fmt.Errorf(errorStr)
 }
-func (provider *provider) GetCfgOpts() (providers.Config, error) {
+func (provider *provider) GetConfigurationOptions() (providers.Config, error) {
 	return nil, fmt.Errorf(errorStr)
 }
 
-func (provider *provider) ListAvailabilityZones(bool) (map[string]bool, error) {
+func (provider *provider) ListAvailabilityZones() (map[string]bool, error) {
+	return nil, fmt.Errorf(errorStr)
+}
+
+// ListRegions returns a list with the regions available
+func (provider *provider) ListRegions() ([]string, error) {
 	return nil, fmt.Errorf(errorStr)
 }
 
@@ -116,6 +122,11 @@ func (provider *provider) ResizeHost(id string, request resources.SizingRequirem
 func (provider *provider) InspectHost(interface{}) (*resources.Host, error) {
 	return nil, fmt.Errorf(errorStr)
 }
+
+func (provider *provider) WaitHostReady(hostParam interface{}, timeout time.Duration) (_ *resources.Host, err error) {
+	return nil, fmt.Errorf(errorStr)
+}
+
 func (provider *provider) GetHostByName(string) (*resources.Host, error) {
 	return nil, fmt.Errorf(errorStr)
 }

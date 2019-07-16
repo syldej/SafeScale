@@ -24,13 +24,13 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 
-	google_protobuf "github.com/golang/protobuf/ptypes/empty"
+	protobuf "github.com/golang/protobuf/ptypes/empty"
 
 	pb "github.com/CS-SI/SafeScale/lib"
 	"github.com/CS-SI/SafeScale/lib/server/handlers"
+	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/VolumeSpeed"
 	"github.com/CS-SI/SafeScale/lib/server/utils"
 	conv "github.com/CS-SI/SafeScale/lib/server/utils"
-	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/VolumeSpeed"
 )
 
 // safescale volume create v1 --speed="SSD" --size=2000 (par default HDD, possible SSD, HDD, COLD)
@@ -39,6 +39,8 @@ import (
 // safescale volume delete v1
 // safescale volume inspect v1
 // safescale volume update v1 --speed="HDD" --size=1000
+
+//go:generate mockgen -destination=../mocks/mock_volumeserviceserver.go -package=mocks github.com/CS-SI/SafeScale/lib VolumeServiceServer
 
 // VolumeHandler ...
 var VolumeHandler = handlers.NewVolumeHandler
@@ -102,7 +104,7 @@ func (s *VolumeListener) Create(ctx context.Context, in *pb.VolumeDefinition) (*
 
 	ctx, cancelFunc := context.WithCancel(ctx)
 	if err := utils.ProcessRegister(ctx, cancelFunc, "Volumes Create "+in.GetName()); err != nil {
-		return nil, fmt.Errorf("Failed to register the process : %s", err.Error())
+		return nil, fmt.Errorf("failed to register the process : %s", err.Error())
 	}
 
 	tenant := GetCurrentTenant()
@@ -122,7 +124,7 @@ func (s *VolumeListener) Create(ctx context.Context, in *pb.VolumeDefinition) (*
 }
 
 // Attach a volume to an host and create a mount point
-func (s *VolumeListener) Attach(ctx context.Context, in *pb.VolumeAttachment) (*google_protobuf.Empty, error) {
+func (s *VolumeListener) Attach(ctx context.Context, in *pb.VolumeAttachment) (*protobuf.Empty, error) {
 	if s == nil {
 		panic("Calling server.listeners.VolumeListener::Attach from nil pointer!")
 	}
@@ -139,7 +141,7 @@ func (s *VolumeListener) Attach(ctx context.Context, in *pb.VolumeAttachment) (*
 	ctx, cancelFunc := context.WithCancel(ctx)
 	err := utils.ProcessRegister(ctx, cancelFunc, "Volumes Attach "+volumeName+" to host "+hostName)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to register the process : %s", err.Error())
+		return nil, fmt.Errorf("failed to register the process : %s", err.Error())
 	}
 
 	tenant := GetCurrentTenant()
@@ -154,11 +156,11 @@ func (s *VolumeListener) Attach(ctx context.Context, in *pb.VolumeAttachment) (*
 		return nil, grpc.Errorf(codes.Internal, err.Error())
 	}
 
-	return &google_protobuf.Empty{}, nil
+	return &protobuf.Empty{}, nil
 }
 
 // Detach a volume from an host. It umount associated mountpoint
-func (s *VolumeListener) Detach(ctx context.Context, in *pb.VolumeDetachment) (*google_protobuf.Empty, error) {
+func (s *VolumeListener) Detach(ctx context.Context, in *pb.VolumeDetachment) (*protobuf.Empty, error) {
 	if s == nil {
 		panic("Calling server.listeners.VolumeListener::Detach from nil pointer!")
 	}
@@ -191,11 +193,11 @@ func (s *VolumeListener) Detach(ctx context.Context, in *pb.VolumeDetachment) (*
 	}
 
 	log.Println(fmt.Sprintf("Volume '%s' detached from '%s'", volumeName, hostName))
-	return &google_protobuf.Empty{}, nil
+	return &protobuf.Empty{}, nil
 }
 
 // Delete a volume
-func (s *VolumeListener) Delete(ctx context.Context, in *pb.Reference) (*google_protobuf.Empty, error) {
+func (s *VolumeListener) Delete(ctx context.Context, in *pb.Reference) (*protobuf.Empty, error) {
 	if s == nil {
 		panic("Calling server.listeners.VolumeListener::Delete from nil pointer!")
 	}
@@ -227,10 +229,10 @@ func (s *VolumeListener) Delete(ctx context.Context, in *pb.Reference) (*google_
 	handler := VolumeHandler(tenant.Service)
 	err := handler.Delete(ctx, ref)
 	if err != nil {
-		return &google_protobuf.Empty{}, grpc.Errorf(codes.Internal, fmt.Sprintf("can't delete volume '%s': %s", ref, err.Error()))
+		return &protobuf.Empty{}, grpc.Errorf(codes.Internal, fmt.Sprintf("can't delete volume '%s': %s", ref, err.Error()))
 	}
 	log.Infof("Volume '%s' successfully deleted.", ref)
-	return &google_protobuf.Empty{}, nil
+	return &protobuf.Empty{}, nil
 }
 
 // Inspect a volume

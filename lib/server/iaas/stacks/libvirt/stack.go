@@ -16,14 +16,6 @@ type Stack struct {
 	AuthOptions    *stacks.AuthenticationOptions
 }
 
-func (s *Stack) GetConfigurationOptions() stacks.ConfigurationOptions {
-	return s.GetConfigurationOptions()
-}
-
-func (s *Stack) GetAuthenticationOptions() stacks.AuthenticationOptions {
-	return s.GetAuthenticationOptions()
-}
-
 // Build Create and initialize a ClientAPI
 func New(auth stacks.AuthenticationOptions, localCfg stacks.LocalConfiguration, cfg stacks.ConfigurationOptions) (*Stack, error) {
 	stack := &Stack{
@@ -32,16 +24,16 @@ func New(auth stacks.AuthenticationOptions, localCfg stacks.LocalConfiguration, 
 		AuthOptions:   &auth,
 	}
 
-	libvirt, err := libvirt.NewConnect(stack.LibvirtConfig.URI)
+	libvirtConnection, err := libvirt.NewConnect(stack.LibvirtConfig.URI)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to connect to libvirt : %s", err.Error())
+		return nil, fmt.Errorf("failed to connect to libvirt : %s", err.Error())
 	}
-	stack.LibvirtService = libvirt
+	stack.LibvirtService = libvirtConnection
 
 	if stack.LibvirtConfig.LibvirtStorage != "" {
 		err := stack.CreatePoolIfUnexistant(stack.LibvirtConfig.LibvirtStorage)
 		if err != nil {
-			return nil, fmt.Errorf("Unable to create StoragePool : %s", err.Error())
+			return nil, fmt.Errorf("unable to create StoragePool : %s", err.Error())
 		}
 	}
 

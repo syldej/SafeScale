@@ -18,7 +18,10 @@ package ovh
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
+
+	"github.com/asaskevich/govalidator"
 
 	log "github.com/sirupsen/logrus"
 
@@ -63,7 +66,7 @@ var (
 	dnsServers       = []string{"213.186.33.99", "1.1.1.1"}
 )
 
-//OVH api credentials
+// OVH api credentials
 var (
 	alternateAPIApplicationKey    string
 	alternateAPIApplicationSecret string
@@ -73,6 +76,7 @@ var (
 // provider is the providerementation of the OVH provider
 type provider struct {
 	*openstack.Stack
+
 	ExternalNetworkID string
 }
 
@@ -84,14 +88,19 @@ func New() providerapi.Provider {
 // Build build a new instance of Ovh using configuration parameters
 func (p *provider) Build(params map[string]interface{}) (providerapi.Provider, error) {
 	identityParams, _ := params["identity"].(map[string]interface{})
-	computeParams, _ := params["compute"].(map[string]interface{})
+	compute, _ := params["compute"].(map[string]interface{})
 	// networkParams, _ := params["network"].(map[string]interface{})
 
 	applicationKey, _ := identityParams["ApplicationKey"].(string)
 	openstackID, _ := identityParams["OpenstackID"].(string)
 	openstackPassword, _ := identityParams["OpenstackPassword"].(string)
-	region, _ := computeParams["Region"].(string)
-	projectName, _ := computeParams["ProjectName"].(string)
+	region, _ := compute["Region"].(string)
+	zone, ok := compute["AvailabilityZone"].(string)
+	if !ok {
+		zone = "nova"
+	}
+
+	projectName, _ := compute["ProjectName"].(string)
 
 	val1, ok1 := identityParams["AlternateApiConsumerKey"]
 	val2, ok2 := identityParams["AlternateApiApplicationSecret"]
@@ -103,7 +112,7 @@ func (p *provider) Build(params map[string]interface{}) (providerapi.Provider, e
 	}
 
 	operatorUsername := resources.DefaultUser
-	if operatorUsernameIf, ok := computeParams["OperatorUsername"]; ok {
+	if operatorUsernameIf, ok := compute["OperatorUsername"]; ok {
 		operatorUsername = operatorUsernameIf.(string)
 		if operatorUsername == "" {
 			log.Warnf("OperatorUsername is empty ! Check your tenants.toml file ! Using 'safescale' user instead.")
@@ -118,7 +127,18 @@ func (p *provider) Build(params map[string]interface{}) (providerapi.Provider, e
 		TenantID:         applicationKey,
 		TenantName:       projectName,
 		Region:           region,
+		AvailabilityZone: zone,
 		AllowReauth:      true,
+	}
+
+	govalidator.TagMap["alphanumwithdashesandunderscores"] = govalidator.Validator(func(str string) bool {
+		rxp := regexp.MustCompile(stacks.AlphanumericWithDashesAndUnderscores)
+		return rxp.Match([]byte(str))
+	})
+
+	_, err := govalidator.ValidateStruct(authOptions)
+	if err != nil {
+		return nil, err
 	}
 
 	metadataBucketName, err := objectstorage.BuildMetadataBucketName("openstack", region, applicationKey, projectName)
@@ -147,6 +167,47 @@ func (p *provider) Build(params map[string]interface{}) (providerapi.Provider, e
 		return nil, err
 	}
 
+	validRegions, err := stack.ListRegions()
+	if err != nil {
+		if len(validRegions) != 0 {
+			return nil, err
+		}
+	}
+	if len(validRegions) != 0 {
+		regionIsValidInput := false
+		for _, vr := range validRegions {
+			if region == vr {
+				regionIsValidInput = true
+			}
+		}
+		if !regionIsValidInput {
+			return nil, fmt.Errorf("invalid Region: '%s'", region)
+		}
+	}
+
+	validAvailabilityZones, err := stack.ListAvailabilityZones()
+	if err != nil {
+		if len(validAvailabilityZones) != 0 {
+			return nil, err
+		}
+	}
+
+	if len(validAvailabilityZones) != 0 {
+		var validZones []string
+		zoneIsValidInput := false
+		for az, valid := range validAvailabilityZones {
+			if valid {
+				if az == zone {
+					zoneIsValidInput = true
+				}
+				validZones = append(validZones, az)
+			}
+		}
+		if !zoneIsValidInput {
+			return nil, fmt.Errorf("invalid Availability zone: '%s', valid zones are %v", zone, validZones)
+		}
+	}
+
 	newP := &provider{Stack: stack}
 	err = stack.InitDefaultSecurityGroup()
 	if err != nil {
@@ -155,8 +216,8 @@ func (p *provider) Build(params map[string]interface{}) (providerapi.Provider, e
 	return newP, nil
 }
 
-// GetAuthOpts returns the auth options
-func (p *provider) GetAuthOpts() (providers.Config, error) {
+// GetAuthenticationOptions returns the auth options
+func (p *provider) GetAuthenticationOptions() (providers.Config, error) {
 	cfg := providers.ConfigMap{}
 
 	opts := p.Stack.GetAuthenticationOptions()
@@ -172,8 +233,8 @@ func (p *provider) GetAuthOpts() (providers.Config, error) {
 	return cfg, nil
 }
 
-// GetCfgOpts return configuration parameters
-func (p *provider) GetCfgOpts() (providers.Config, error) {
+// GetConfigurationOptions return configuration parameters
+func (p *provider) GetConfigurationOptions() (providers.Config, error) {
 	cfg := providers.ConfigMap{}
 
 	opts := p.Stack.GetConfigurationOptions()
@@ -202,14 +263,14 @@ func addGPUCfg(tpl *resources.HostTemplate) {
 	}
 }
 
-// // ListImages overload OpenStack ListTemplate method to filter wind and flex instance and add GPU configuration
-// func (p *provider) ListImages(all bool) ([]resources.Image, error) {
-// 	return p.Stack.ListImages(all)
-// }
+// ListImages overload OpenStack ListTemplate method to filter wind and flex instance and add GPU configuration
+func (p *provider) ListImages(all bool) ([]resources.Image, error) {
+	return p.Stack.ListImages()
+}
 
 // ListTemplates overload OpenStack ListTemplate method to filter wind and flex instance and add GPU configuration
 func (p *provider) ListTemplates(all bool) ([]resources.HostTemplate, error) {
-	allTemplates, err := p.Stack.ListTemplates(all)
+	allTemplates, err := p.Stack.ListTemplates()
 	if err != nil {
 		return nil, err
 	}
@@ -220,8 +281,8 @@ func (p *provider) ListTemplates(all bool) ([]resources.HostTemplate, error) {
 		allTemplates = filters.FilterTemplates(allTemplates, filter)
 	}
 
-	//check flavor disponibilities through OVH-API
-	authOpts, err := p.GetAuthOpts()
+	// check flavor disponibilities through OVH-API
+	authOpts, err := p.GetAuthenticationOptions()
 	if err != nil {
 		log.Warn(fmt.Sprintf("Failed to get Authentication options, flavors availability won't be checked: %v", err))
 		return allTemplates, nil
@@ -238,21 +299,21 @@ func (p *provider) ListTemplates(all bool) ([]resources.HostTemplate, error) {
 
 	flavorMap := map[string]map[string]interface{}{}
 	for _, flavor := range flavors.([]interface{}) {
-		// Elimination of all the unavailable features
+		// Removal of all the unavailable templates
 		if flavor.(map[string]interface{})["available"].(bool) {
 			flavorMap[flavor.(map[string]interface{})["id"].(string)] = flavor.(map[string]interface{})
 		}
 	}
 
-	listAvailableTeplates := []resources.HostTemplate{}
+	listAvailableTemplates := []resources.HostTemplate{}
 	for _, template := range allTemplates {
 		if _, ok := flavorMap[template.ID]; ok {
-			listAvailableTeplates = append(listAvailableTeplates, template)
+			listAvailableTemplates = append(listAvailableTemplates, template)
 		} else {
 			log.Debug(fmt.Sprintf("Flavor %s@%s is not available at the moment at is so ignored", template.Name, template.ID))
 		}
 	}
-	allTemplates = listAvailableTeplates
+	allTemplates = listAvailableTemplates
 
 	return allTemplates, nil
 }

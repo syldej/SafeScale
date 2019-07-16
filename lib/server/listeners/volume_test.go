@@ -24,10 +24,10 @@ import (
 
 	pb "github.com/CS-SI/SafeScale/lib"
 	"github.com/CS-SI/SafeScale/lib/server/handlers"
-	"github.com/CS-SI/SafeScale/lib/server/listeners"
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/VolumeSpeed"
+	"github.com/CS-SI/SafeScale/lib/server/listeners"
 )
 
 type MyMockedVolService struct {
@@ -66,7 +66,7 @@ func TestCreate(t *testing.T) {
 	old := listeners.VolumeHandler
 	defer func() { listeners.VolumeHandler = old }()
 
-	listeners.VolumeHandler = func(svc *iaas.Service) handlers.VolumeAPI {
+	listeners.VolumeHandler = func(svc iaas.Service) handlers.VolumeAPI {
 		return nil
 		// TODO Fix this test
 		// return myMockedVolService
@@ -76,37 +76,47 @@ func TestCreate(t *testing.T) {
 	oldGetCurrentTeant := listeners.GetCurrentTenant
 	defer func() { listeners.GetCurrentTenant = oldGetCurrentTeant }()
 	listeners.GetCurrentTenant = func() *listeners.Tenant {
-		return &listeners.Tenant{Service: &iaas.Service{}}
+		return &listeners.Tenant{}
 	}
 
 	underTest := &listeners.VolumeListener{}
 
 	// ACT
-	underTest.Create(nil, &pb.VolumeDefinition{
+	_, err := underTest.Create(nil, &pb.VolumeDefinition{
 		Speed: pb.VolumeSpeed_SSD,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	// ASSERT
 	myMockedVolService.AssertCalled(t, "Create", mock.Anything, mock.Anything, VolumeSpeed.SSD)
 
-	underTest.Create(nil, &pb.VolumeDefinition{
+	_, err = underTest.Create(nil, &pb.VolumeDefinition{
 		Speed: pb.VolumeSpeed_HDD,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	myMockedVolService.AssertCalled(t, "Create", mock.Anything, mock.Anything, VolumeSpeed.HDD)
-	underTest.Create(nil, &pb.VolumeDefinition{
+	_, err = underTest.Create(nil, &pb.VolumeDefinition{
 		Speed: pb.VolumeSpeed_COLD,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	myMockedVolService.AssertCalled(t, "Create", mock.Anything, mock.Anything, VolumeSpeed.COLD)
 }
 
 func TestCreate_Err(t *testing.T) {
 	// ARRANGE
 	myMockedVolService := &MyMockedVolService{err: errors.New("plop")}
-	myMockedVolService.On("Create", mock.Anything, mock.Anything, mock.Anything).Return(nil, errors.New("Fake Error"))
+	myMockedVolService.On("Create", mock.Anything, mock.Anything, mock.Anything).Return(nil, errors.New("fake Error"))
 	//Mock VolumeServiceCreator
 	old := listeners.VolumeHandler
 	defer func() { listeners.VolumeHandler = old }()
 
-	listeners.VolumeHandler = func(api *iaas.Service) handlers.VolumeAPI {
+	listeners.VolumeHandler = func(api iaas.Service) handlers.VolumeAPI {
 		// TODO Fix this test
 		return nil
 		// return myMockedVolService
@@ -116,7 +126,7 @@ func TestCreate_Err(t *testing.T) {
 	oldGetCurrentTeant := listeners.GetCurrentTenant
 	defer func() { listeners.GetCurrentTenant = oldGetCurrentTeant }()
 	listeners.GetCurrentTenant = func() *listeners.Tenant {
-		return &listeners.Tenant{Service: &iaas.Service{}}
+		return &listeners.Tenant{}
 	}
 
 	underTest := &listeners.VolumeListener{}

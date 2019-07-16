@@ -22,7 +22,7 @@ import (
 	"time"
 )
 
-func quick_sleepy() error {
+func quickSleepy() error {
 	fmt.Println("Quick OK")
 	time.Sleep(1 * time.Second)
 	return nil
@@ -34,16 +34,16 @@ func sleepy() error {
 	return nil
 }
 
-func sleepy_failure() error {
+func sleepyFailure() error {
 	fmt.Println("Slow fail")
 	time.Sleep(1 * time.Minute)
-	return fmt.Errorf("Always fails...")
+	return fmt.Errorf("always fails")
 }
 
-func quick_sleepy_failure() error {
+func quickSleepyFailure() error {
 	fmt.Println("Quick fail")
 	time.Sleep(1 * time.Second)
-	return fmt.Errorf("Always fails...")
+	return fmt.Errorf("always fails")
 }
 
 func TestWhileUnsuccessfulDelay5Seconds(t *testing.T) {
@@ -57,9 +57,9 @@ func TestWhileUnsuccessfulDelay5Seconds(t *testing.T) {
 		wantErr bool
 	}{
 		{"OneTimeSlowOK", args{sleepy, time.Duration(15) * time.Second}, false},
-		{"OneTimeSlowFails", args{sleepy_failure, time.Duration(15) * time.Second}, true},
-		{"OneTimeQuickOK", args{quick_sleepy, time.Duration(15) * time.Second}, false},
-		{"UntilTimeouts", args{quick_sleepy_failure, time.Duration(15) * time.Second}, true},
+		{"OneTimeSlowFails", args{sleepyFailure, time.Duration(15) * time.Second}, true},
+		{"OneTimeQuickOK", args{quickSleepy, time.Duration(15) * time.Second}, false},
+		{"UntilTimeouts", args{quickSleepyFailure, time.Duration(15) * time.Second}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -76,14 +76,15 @@ func TestWhileUnsuccessfulDelay5SecondsCheck(t *testing.T) {
 		timeout time.Duration
 	}
 	tests := []struct {
-		name    string
-		args    args
-		wantErr bool
+		name      string
+		args      args
+		wantErr   bool
+		wantTOErr bool
 	}{
-		{"OneTimeSlowOK", args{sleepy, time.Duration(15) * time.Second}, true},
-		{"OneTimeSlowFails", args{sleepy_failure, time.Duration(15) * time.Second}, true},
-		{"OneTimeQuickOK", args{quick_sleepy, time.Duration(15) * time.Second}, false},
-		{"UntilTimeouts", args{quick_sleepy_failure, time.Duration(15) * time.Second}, true},
+		{"OneTimeSlowOK", args{sleepy, time.Duration(15) * time.Second}, false, true},
+		{"OneTimeSlowFails", args{sleepyFailure, time.Duration(15) * time.Second}, true, true},
+		{"OneTimeQuickOK", args{quickSleepy, time.Duration(15) * time.Second}, false, false},
+		{"UntilTimeouts", args{quickSleepyFailure, time.Duration(15) * time.Second}, true, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -92,27 +93,28 @@ func TestWhileUnsuccessfulDelay5SecondsCheck(t *testing.T) {
 				t.Errorf("WhileUnsuccessfulDelay5Seconds() error = %v, wantErr %v", err, tt.wantErr)
 			}
 			delta := time.Since(testStart)
-			if delta.Seconds() >= tt.args.timeout.Seconds()+1.5 {
-				t.Errorf("WhileUnsuccessfulDelay5Seconds() error = %v", fmt.Errorf("It's not a real timeout, il tasted %f and the limit was %f", delta.Seconds(), tt.args.timeout.Seconds()))
+			if delta.Seconds() >= tt.args.timeout.Seconds()+2 && !tt.wantTOErr {
+				t.Errorf("WhileUnsuccessfulDelay5Seconds() error = %v", fmt.Errorf("it's not a real timeout, il tasted %f and the limit was %f", delta.Seconds(), tt.args.timeout.Seconds()))
 			}
 		})
 	}
 }
 
-func TestWhileUnsuccessfulDelay5SecondsCheckX(t *testing.T) {
+func TestWhileUnsuccessfulDelay5SecondsCheckStrictTimeout(t *testing.T) {
 	type args struct {
 		run     func() error
 		timeout time.Duration
 	}
 	tests := []struct {
-		name    string
-		args    args
-		wantErr bool
+		name      string
+		args      args
+		wantErr   bool
+		wantTOErr bool
 	}{
-		{"OneTimeSlowOK", args{sleepy, time.Duration(15) * time.Second}, true},
-		{"OneTimeSlowFails", args{sleepy_failure, time.Duration(15) * time.Second}, true},
-		{"OneTimeQuickOK", args{quick_sleepy, time.Duration(15) * time.Second}, false},
-		{"UntilTimeouts", args{quick_sleepy_failure, time.Duration(15) * time.Second}, true},
+		{"OneTimeSlowOK", args{sleepy, time.Duration(15) * time.Second}, true, false},
+		{"OneTimeSlowFails", args{sleepyFailure, time.Duration(15) * time.Second}, true, false},
+		{"OneTimeQuickOK", args{quickSleepy, time.Duration(15) * time.Second}, false, false},
+		{"UntilTimeouts", args{quickSleepyFailure, time.Duration(15) * time.Second}, true, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -122,7 +124,7 @@ func TestWhileUnsuccessfulDelay5SecondsCheckX(t *testing.T) {
 			}
 			delta := time.Since(testStart)
 			if delta.Seconds() >= tt.args.timeout.Seconds()+1.5 { // 0.5 seconds tolerance
-				t.Errorf("WhileUnsuccessfulDelay5SecondsTimeout() error = %v", fmt.Errorf("It's not a real timeout, il tasted %f and the limit was %f", delta.Seconds(), tt.args.timeout.Seconds()))
+				t.Errorf("WhileUnsuccessfulDelay5SecondsTimeout() error = %v", fmt.Errorf("it's not a real timeout, il tasted %f and the limit was %f", delta.Seconds(), tt.args.timeout.Seconds()))
 			}
 		})
 	}

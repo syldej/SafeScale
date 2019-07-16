@@ -18,6 +18,7 @@ package openstack
 
 import (
 	"fmt"
+
 	"github.com/CS-SI/SafeScale/lib/utils"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/pkg/errors"
@@ -95,11 +96,16 @@ func (s *Stack) CreateVolume(request resources.VolumeRequest) (*resources.Volume
 
 	volume, err := s.GetVolume(request.Name)
 	if err != nil {
-		if _, ok := err.(resources.ErrResourceNotFound); !ok {
+		if !utils.IsNotFoundError(err) {
 			return nil, err
 		}
 	}
 	if volume != nil {
+		return nil, fmt.Errorf("volume '%s' already exists", request.Name)
+	}
+
+	az, err := s.SelectedAvailabilityZone()
+	if err != nil {
 		return nil, fmt.Errorf("volume '%s' already exists", request.Name)
 	}
 
@@ -108,10 +114,14 @@ func (s *Stack) CreateVolume(request resources.VolumeRequest) (*resources.Volume
 	case "v1":
 		var vol *volumesv1.Volume
 		vol, err = volumesv1.Create(s.VolumeClient, volumesv1.CreateOpts{
-			Name:       request.Name,
-			Size:       request.Size,
-			VolumeType: s.getVolumeType(request.Speed),
+			AvailabilityZone: az,
+			Name:             request.Name,
+			Size:             request.Size,
+			VolumeType:       s.getVolumeType(request.Speed),
 		}).Extract()
+		if vol == nil {
+			panic("Unexpected nil volume")
+		}
 		v = resources.Volume{
 			ID:    vol.ID,
 			Name:  vol.Name,
@@ -122,10 +132,14 @@ func (s *Stack) CreateVolume(request resources.VolumeRequest) (*resources.Volume
 	case "v2":
 		var vol *volumesv2.Volume
 		vol, err = volumesv2.Create(s.VolumeClient, volumesv2.CreateOpts{
-			Name:       request.Name,
-			Size:       request.Size,
-			VolumeType: s.getVolumeType(request.Speed),
+			AvailabilityZone: az,
+			Name:             request.Name,
+			Size:             request.Size,
+			VolumeType:       s.getVolumeType(request.Speed),
 		}).Extract()
+		if vol == nil {
+			panic("Unexpected nil volume")
+		}
 		v = resources.Volume{
 			ID:    vol.ID,
 			Name:  vol.Name,
@@ -186,7 +200,7 @@ func (s *Stack) ListVolumes() ([]resources.Volume, error) {
 	err := volumesv2.List(s.VolumeClient, volumesv2.ListOpts{}).EachPage(func(page pagination.Page) (bool, error) {
 		list, err := volumesv2.ExtractVolumes(page)
 		if err != nil {
-			log.Errorf("Error listing volumes: volume extraction: %+v", err)
+			log.Errorf("error listing volumes: volume extraction: %+v", err)
 			return false, err
 		}
 		for _, vol := range list {
@@ -243,9 +257,7 @@ func (s *Stack) DeleteVolume(id string) error {
 	)
 	if retryErr != nil {
 		if _, ok := retryErr.(retry.ErrTimeout); ok {
-			if err != nil {
-				return fmt.Errorf("timeout after %v to delete volume: %v", timeout, err)
-			}
+			return fmt.Errorf("timeout after %v to delete volume: %v", timeout, err)
 		}
 		log.Debugf("Error deleting volume: %+v", retryErr)
 		return errors.Wrap(retryErr, fmt.Sprintf("Error deleting volume: %v", retryErr))

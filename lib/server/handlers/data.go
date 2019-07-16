@@ -62,7 +62,7 @@ func NewDataHandler(svc *iaas.StorageServices) DataAPI {
 	return &DataHandler{storageServices: svc}
 }
 
-// Return the formated (and considered unique) keyFileName and metadataFileName linked to a fileName
+// Return the formatted (and considered unique) keyFileName and metadataFileName linked to a fileName
 func getFileNames(fileName string) (string, string) {
 	hashedFileName := utils.Hash(strings.NewReader(fileName))
 	metadataFileName := "meta-" + hashedFileName + ".bin"
@@ -101,13 +101,13 @@ func fetchChunkGroup(fileName string, buckets []objectstorage.Bucket) (*utils.Ch
 		break
 	}
 	if keyInfo == nil {
-		return nil, fmt.Errorf("Failed to find the file '%s'", fileName)
+		return nil, fmt.Errorf("failed to find the file '%s'", fileName)
 	}
 
 	buffer.Reset()
 	_, err := buckets[i].ReadObject(metadataFileName, &buffer, 0, 0)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to read the chunkGroup from the bucket '%s' : %s", buckets[i].GetName(), err.Error())
+		return nil, fmt.Errorf("failed to read the chunkGroup from the bucket '%s' : %s", buckets[i].GetName(), err.Error())
 	}
 	chunkGroup, err := utils.DecryptChunkGroup(buffer.Bytes(), keyInfo)
 	if err != nil {
@@ -118,20 +118,21 @@ func fetchChunkGroup(fileName string, buckets []objectstorage.Bucket) (*utils.Ch
 
 //Push ...
 func (handler *DataHandler) Push(ctx context.Context, fileLocalPath string, fileName string) error {
-	log.Debugf(">>> safescale.server.handlers.DataHandler::Push(%s)", fileLocalPath)
-	defer log.Debugf("<<< safescale.server.handlers.DataHandler::Push(%s)", fileLocalPath)
+	log.Debugf(">>> lib.server.handlers.DataHandler::Push(%s)", fileLocalPath)
+	defer log.Debugf("<<< lib.server.handlers.DataHandler::Push(%s)", fileLocalPath)
 	//localFile inspection
 	file, err := os.Open(fileLocalPath)
 	if err != nil {
-		return fmt.Errorf("Failed to open '%s' : %s", fileLocalPath, err.Error())
+		return fmt.Errorf("failed to open '%s' : %s", fileLocalPath, err.Error())
 	}
-	defer func() { // FIXME: Catch error later
+	defer func() {
+		// FIXME Catch error later
 		_ = file.Close()
 	}()
 
 	fileStats, err := file.Stat()
 	if err != nil {
-		return fmt.Errorf("Failed to get file '%s' stats : %s", fileLocalPath, err.Error())
+		return fmt.Errorf("failed to get file '%s' stats : %s", fileLocalPath, err.Error())
 	}
 	fileSize := fileStats.Size()
 
@@ -143,7 +144,7 @@ func (handler *DataHandler) Push(ctx context.Context, fileLocalPath string, file
 	for i := range buckets {
 		_, err := buckets[i].GetObject(metadataFileName)
 		if err == nil {
-			return fmt.Errorf("An object named '%s' is already present in the bucket '%s'", fileName, buckets[i].GetName())
+			return fmt.Errorf("an object named '%s' is already present in the bucket '%s'", fileName, buckets[i].GetName())
 		}
 
 	}
@@ -186,7 +187,7 @@ func (handler *DataHandler) Push(ctx context.Context, fileLocalPath string, file
 		for j := 0; j < batchNbDataShards; j++ {
 			nbBytes, err := file.Read(shards[j])
 			if err != nil {
-				return fmt.Errorf("Failed to read the %d-th shard bytes : %s", j, err.Error())
+				return fmt.Errorf("failed to read the %d-th shard bytes : %s", j, err.Error())
 			}
 			//padding
 			if nbBytes != chunkSize {
@@ -198,11 +199,11 @@ func (handler *DataHandler) Push(ctx context.Context, fileLocalPath string, file
 		// Reed-Salomon encoding
 		encoder, err := reedsolomon.New(batchNbDataShards, batchNbParityShards)
 		if err != nil {
-			return fmt.Errorf("Failed to create a reedsolomon Encoder : %s", err.Error())
+			return fmt.Errorf("failed to create a reedsolomon Encoder : %s", err.Error())
 		}
 		err = encoder.Encode(shards)
 		if err != nil {
-			return fmt.Errorf("Failed to create a encode the file : %s", err.Error())
+			return fmt.Errorf("failed to create a encode the file : %s", err.Error())
 		}
 
 		// Encrypt shards with AES 256
@@ -214,12 +215,12 @@ func (handler *DataHandler) Push(ctx context.Context, fileLocalPath string, file
 			shardNum := chunkGroup.GetShardNum(i, j)
 			nonce, err := chunkGroup.GenerateNonce(shardNum, gcm.NonceSize())
 			if err != nil {
-				return fmt.Errorf("Failed to generate nonce : %s", err.Error())
+				return fmt.Errorf("failed to generate nonce : %s", err.Error())
 			}
 			encryptedShards[j] = gcm.Seal(nil, nonce, shards[j], nil)
 			_, err = chunkGroup.ComputeShardCheckSum(shardNum, bytes.NewReader(encryptedShards[j]))
 			if err != nil {
-				return fmt.Errorf("Failed to compute the check sum of a shard : %s", err.Error())
+				return fmt.Errorf("failed to compute the check sum of a shard : %s", err.Error())
 			}
 		}
 
@@ -233,8 +234,8 @@ func (handler *DataHandler) Push(ctx context.Context, fileLocalPath string, file
 				bucket := bucketMap[shardBucketName]
 				_, err := bucket.WriteObject(shardName, bytes.NewReader(encryptedShards[j]), int64(len(encryptedShards[j])), nil)
 				if err != nil {
-					errChan <- fmt.Errorf("Failed to copy a shard on the bucket '%s' : %s", bucket.GetName(), err.Error())
-					log.Errorf("Failed to copy a shard on the bucket '%s' : %s", bucket.GetName(), err.Error())
+					errChan <- fmt.Errorf("failed to copy a shard on the bucket '%s' : %s", bucket.GetName(), err.Error())
+					log.Errorf("failed to copy a shard on the bucket '%s' : %s", bucket.GetName(), err.Error())
 				}
 				wg.Done()
 			}(j)
@@ -254,7 +255,7 @@ func (handler *DataHandler) Push(ctx context.Context, fileLocalPath string, file
 	for i := range buckets {
 		_, err = buckets[i].WriteObject(metadataFileName, bytes.NewReader(encryptedChunkGroup), int64(len(encryptedChunkGroup)), nil)
 		if err != nil {
-			return fmt.Errorf("Failed to copy chunkGroup on the bucket '%s' : %s", buckets[i].GetName(), err.Error())
+			return fmt.Errorf("failed to copy chunkGroup on the bucket '%s' : %s", buckets[i].GetName(), err.Error())
 		}
 	}
 
@@ -267,7 +268,7 @@ func (handler *DataHandler) Push(ctx context.Context, fileLocalPath string, file
 	for i := range buckets {
 		_, err = buckets[i].WriteObject(keyInfoFileName, bytes.NewReader(encryptedKeyInfo), int64(len(encryptedKeyInfo)), nil)
 		if err != nil {
-			return fmt.Errorf("Failed to copy keyInfo on the bucket '%s' : %s", buckets[i].GetName(), err.Error())
+			return fmt.Errorf("failed to copy keyInfo on the bucket '%s' : %s", buckets[i].GetName(), err.Error())
 		}
 	}
 
@@ -276,22 +277,22 @@ func (handler *DataHandler) Push(ctx context.Context, fileLocalPath string, file
 
 //Get ...
 func (handler *DataHandler) Get(ctx context.Context, fileLocalPath string, fileName string) error {
-	log.Debugf(">>> safescale.server.handlers.DataHandler::Get(%s)", fileName)
-	defer log.Debugf("<<< safescale.server.handlers.DataHandler::Get(%s)", fileName)
+	log.Debugf(">>> lib.server.handlers.DataHandler::Get(%s)", fileName)
+	defer log.Debugf("<<< lib.server.handlers.DataHandler::Get(%s)", fileName)
 
 	// Check if the local file is available
 	if _, err := os.Stat(fileLocalPath); err == nil {
-		return fmt.Errorf("File '%s' already exists", fileLocalPath)
+		return fmt.Errorf("file '%s' already exists", fileLocalPath)
 	}
 	file, err := os.Create(fileLocalPath)
 	if err != nil {
-		return fmt.Errorf("Failed to create the file '%s' : %s", fileLocalPath, err.Error())
+		return fmt.Errorf("failed to create the file '%s' : %s", fileLocalPath, err.Error())
 	}
 	defer func() {
-		// Suppres local file if Get didn't succeed
+		// Suppress local file if Get didn't succeed
 		if err != nil {
 			if derr := os.Remove(fileLocalPath); derr != nil {
-				log.Errorf("Failed to delete file '%s': %s", fileLocalPath, derr.Error())
+				log.Errorf("failed to delete file '%s': %s", fileLocalPath, derr.Error())
 			}
 		} else {
 			_ = file.Close() // FIXME: Catch error later
@@ -302,7 +303,7 @@ func (handler *DataHandler) Get(ctx context.Context, fileLocalPath string, fileN
 	bucketMap, _, buckets := handler.getBuckets()
 	chunkGroup, err := fetchChunkGroup(fileName, buckets)
 	if err != nil {
-		return fmt.Errorf("Failed to fetch chunk group : %s", err.Error())
+		return fmt.Errorf("failed to fetch chunk group : %s", err.Error())
 	}
 
 	//check if some buckets of the object storage are missing and then if the file can be reconstructed
@@ -314,7 +315,7 @@ func (handler *DataHandler) Get(ctx context.Context, fileLocalPath string, fileN
 	}
 	if len(missingBuckets) != 0 {
 		if !chunkGroup.IsReconstructible(missingBuckets) {
-			return fmt.Errorf("Too much shards are missing to reconstruct the file '%s'", fileName)
+			return fmt.Errorf("too much shards are missing to reconstruct the file '%s'", fileName)
 		}
 	}
 
@@ -357,8 +358,8 @@ func (handler *DataHandler) Get(ctx context.Context, fileLocalPath string, fileN
 				if ok {
 					_, err = bucket.ReadObject(shardName, &encryptedShards[j], 0, 0)
 					if err != nil {
-						errChan <- fmt.Errorf("Failed to copy a shard from the bucket '%s' : %s", bucket.GetName(), err.Error())
-						log.Errorf("Failed to copy a shard from the bucket '%s' : %s", bucket.GetName(), err.Error())
+						errChan <- fmt.Errorf("failed to copy a shard from the bucket '%s' : %s", bucket.GetName(), err.Error())
+						log.Errorf("failed to copy a shard from the bucket '%s' : %s", bucket.GetName(), err.Error())
 					}
 				}
 				wg.Done()
@@ -388,9 +389,12 @@ func (handler *DataHandler) Get(ctx context.Context, fileLocalPath string, fileN
 			if encryptedShards[j].Len() != 0 {
 				nonce := chunkGroup.GetNonce(chunkGroup.GetShardNum(i, j))
 				gcm, err := chunkGroup.GetGCM()
+				if err != nil {
+					return fmt.Errorf("failed to get a GCM : %s", err.Error())
+				}
 				shards[j], err = gcm.Open(nil, nonce, encryptedShards[j].Bytes(), nil)
 				if err != nil {
-					return fmt.Errorf("Failed to decrypt shard : %s", err.Error())
+					return fmt.Errorf("failed to decrypt shard : %s", err.Error())
 				}
 			} else {
 				log.Warnf("%d-th shard of the batch missing, will be reconstructed", j)
@@ -401,17 +405,17 @@ func (handler *DataHandler) Get(ctx context.Context, fileLocalPath string, fileN
 		//reconstruct the original chunk
 		encoder, err := reedsolomon.New(batchNbDataShards, batchNbParityShards)
 		if err != nil {
-			return fmt.Errorf("Failed to create a reedsolomon Encoder : %s", err.Error())
+			return fmt.Errorf("failed to create a reedsolomon Encoder : %s", err.Error())
 		}
 		err = encoder.Reconstruct(shards)
 		if err != nil {
-			return fmt.Errorf("Failed to reconstruct the file : %s", err.Error())
+			return fmt.Errorf("failed to reconstruct the file : %s", err.Error())
 		}
 		ok, err := encoder.Verify(shards)
 		if err != nil {
-			return fmt.Errorf("Failed to verify the file reconstrution : %s", err.Error())
+			return fmt.Errorf("failed to verify the file reconstrution : %s", err.Error())
 		} else if !ok {
-			return fmt.Errorf("Reconstruction verification failed")
+			return fmt.Errorf("reconstruction verification failed")
 		}
 
 		//store the chunk on the localFile
@@ -422,7 +426,7 @@ func (handler *DataHandler) Get(ctx context.Context, fileLocalPath string, fileN
 			}
 			_, err := file.Write(shards[j])
 			if err != nil {
-				return fmt.Errorf("Failed to write a shard to the file '%s' : %s", fileLocalPath, err.Error())
+				return fmt.Errorf("failed to write a shard to the file '%s' : %s", fileLocalPath, err.Error())
 			}
 		}
 	}
@@ -431,19 +435,19 @@ func (handler *DataHandler) Get(ctx context.Context, fileLocalPath string, fileN
 
 // Delete ...
 func (handler *DataHandler) Delete(ctx context.Context, fileName string) error {
-	log.Debugf(">>> safescale.server.handlers.DataHandler::Delete(%s)", fileName)
-	defer log.Debugf("<<< safescale.server.handlers.DataHandler::Delete(%s)", fileName)
+	log.Debugf(">>> lib.server.handlers.DataHandler::Delete(%s)", fileName)
+	defer log.Debugf("<<< lib.server.handlers.DataHandler::Delete(%s)", fileName)
 
 	bucketMap, _, buckets := handler.getBuckets()
 	metadataFileName, keyFileName := getFileNames(fileName)
 	chunkGroup, err := fetchChunkGroup(fileName, buckets)
 	if err != nil {
-		return fmt.Errorf("Failed to fetch chunk group : %s", err.Error())
+		return fmt.Errorf("failed to fetch chunk group : %s", err.Error())
 	}
 
 	for _, bucketName := range chunkGroup.GetBucketNames() {
 		if _, ok := bucketMap[bucketName]; !ok {
-			return fmt.Errorf("Bucket '%s' is unknown", bucketName)
+			return fmt.Errorf("bucket '%s' is unknown", bucketName)
 		}
 	}
 	nbDataShards, nbParityShards := chunkGroup.GetNbShards()
@@ -478,8 +482,8 @@ func (handler *DataHandler) Delete(ctx context.Context, fileName string) error {
 
 // List returns []fileName []UploadDate []fileSize [][]buckets, error
 func (handler *DataHandler) List(ctx context.Context) ([]string, []string, []int64, [][]string, error) {
-	log.Debugf(">>> safescale.server.handlers.DataHandler::List()")
-	defer log.Debugf("<<< safescale.server.handlers.DataHandler::List()")
+	log.Debugf(">>> lib.server.handlers.DataHandler::List()")
+	defer log.Debugf("<<< lib.server.handlers.DataHandler::List()")
 
 	bucketMap, _, buckets := handler.getBuckets()
 
@@ -487,7 +491,7 @@ func (handler *DataHandler) List(ctx context.Context) ([]string, []string, []int
 	for i := range buckets {
 		files, err := buckets[i].List("", "key-")
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("Failed to list objects of bucket '%s' : %s", buckets[i].GetName(), err.Error())
+			return nil, nil, nil, nil, fmt.Errorf("failed to list objects of bucket '%s' : %s", buckets[i].GetName(), err.Error())
 		}
 		for j := range files {
 			keyInfoFileName := files[j]
@@ -507,21 +511,23 @@ func (handler *DataHandler) List(ctx context.Context) ([]string, []string, []int
 		buffer.Reset()
 		_, err := bucketMap[bucketNames[0]].ReadObject(keyInfoFileName, &buffer, 0, 0)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("Failed to read the keyInfo from the bucket '%s' : %s", bucketNames[0], err.Error())
+			return nil, nil, nil, nil, fmt.Errorf("failed to read the keyInfo from the bucket '%s' : %s", bucketNames[0], err.Error())
 		}
 		keyInfo, err := utils.DecryptKeyInfo(buffer.Bytes(), keyFilePathConst)
 		if err != nil {
-			return nil, nil, nil, nil, err
+			continue
+			//return nil, nil, nil, nil, err
 		}
 		//Load & decrypt ChunkGroup
 		buffer.Reset()
 		_, err = bucketMap[bucketNames[0]].ReadObject(chunkGroupFileName, &buffer, 0, 0)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("Failed to read the chunkGroup from the bucket '%s' : %s", bucketNames[0], err.Error())
+			return nil, nil, nil, nil, fmt.Errorf("failed to read the chunkGroup from the bucket '%s' : %s", bucketNames[0], err.Error())
 		}
 		chunkGroup, err := utils.DecryptChunkGroup(buffer.Bytes(), keyInfo)
 		if err != nil {
-			return nil, nil, nil, nil, err
+			continue
+			//return nil, nil, nil, nil, err
 		}
 		//Check if all needed buckets are known
 		ok := true

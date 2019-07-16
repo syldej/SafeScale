@@ -33,10 +33,12 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
-	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	pb "github.com/CS-SI/SafeScale/lib"
+	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	"github.com/CS-SI/SafeScale/lib/server/listeners"
 	"github.com/CS-SI/SafeScale/lib/server/utils"
+
+	_ "github.com/CS-SI/SafeScale/lib/server"
 )
 
 /*
@@ -120,6 +122,13 @@ func work() {
 	suffix := ""
 	if suffixCandidate := os.Getenv("SAFESCALE_METADATA_SUFFIX"); suffixCandidate != "" {
 		suffix = suffixCandidate
+	}
+
+	envVars := os.Environ()
+	for _, envVar := range envVars {
+		if strings.HasPrefix(envVar, "SAFESCALE") {
+			log.Infof("Using %s", envVar)
+		}
 	}
 
 	log.Infof("Starting server, listening at port: %d, using metadata suffix: [%s]", safescaledPort, suffix)

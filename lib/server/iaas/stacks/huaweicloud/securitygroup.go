@@ -247,7 +247,7 @@ func (s *Stack) InitDefaultSecurityGroup() error {
 	}
 	group, err := secgroups.Create(s.Stack.NetworkClient, opts).Extract()
 	if err != nil {
-		return fmt.Errorf("Failed to create Security Group '%s': %s", s.defaultSecurityGroupName, openstack.ProviderErrorToString(err))
+		return fmt.Errorf("failed to create Security Group '%s': %s", s.defaultSecurityGroupName, openstack.ProviderErrorToString(err))
 	}
 	err = s.createTCPRules(group.ID)
 	if err == nil {
@@ -260,7 +260,7 @@ func (s *Stack) InitDefaultSecurityGroup() error {
 			}
 		}
 	}
-	// Error occured...
+	// Error occurred...
 	secgroups.Delete(s.Stack.NetworkClient, group.ID)
 	return err
 }

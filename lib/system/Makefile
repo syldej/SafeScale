@@ -12,6 +12,8 @@ nfs:
 
 generate:
 	@(cd nfs && $(MAKE) $(@))
+	@(cd firewall && $(MAKE) $(@))
+	@$(GO) generate .
 
 clean:
 	@(cd firewall && $(MAKE) $(@))

@@ -108,7 +108,7 @@ func (s *Stack) CreateNetwork(req resources.NetworkRequest) (*resources.Network,
 
 	subnet, err := s.createSubnet(req.Name, network.ID, req.CIDR, req.IPVersion, req.DNSServers)
 	if err != nil {
-		return nil, fmt.Errorf("Error creating network '%s': %s", req.Name, ProviderErrorToString(err))
+		return nil, fmt.Errorf("error creating network '%s': %s", req.Name, ProviderErrorToString(err))
 	}
 
 	// Starting from here, delete subnet if exit with error
@@ -121,12 +121,12 @@ func (s *Stack) CreateNetwork(req resources.NetworkRequest) (*resources.Network,
 		}
 	}()
 
-	net := resources.NewNetwork()
-	net.ID = network.ID
-	net.Name = network.Name
-	net.CIDR = subnet.Mask
-	net.IPVersion = subnet.IPVersion
-	return net, nil
+	newNet := resources.NewNetwork()
+	newNet.ID = network.ID
+	newNet.Name = network.Name
+	newNet.CIDR = subnet.Mask
+	newNet.IPVersion = subnet.IPVersion
+	return newNet, nil
 }
 
 // GetNetworkByName ...
@@ -175,31 +175,31 @@ func (s *Stack) GetNetwork(id string) (*resources.Network, error) {
 	network, err := networks.Get(s.NetworkClient, id).Extract()
 	if err != nil {
 		if _, ok := err.(gophercloud.ErrDefault404); !ok {
-			// log.Errorf("Error getting network: %+v", err)
+			// log.Errorf("error getting network: %+v", err)
 			return nil, errors.Wrap(err, fmt.Sprintf("Error getting network '%s': %s", id, ProviderErrorToString(err)))
 		}
 	}
 	if network != nil && network.ID != "" {
 		sns, err := s.listSubnets(id)
 		if err != nil {
-			// log.Errorf("Error getting network: listing subnet: %+v", err)
+			// log.Errorf("error getting network: listing subnet: %+v", err)
 			return nil, errors.Wrap(err, fmt.Sprintf("Error getting network: %s", ProviderErrorToString(err)))
 		}
 		if len(sns) != 1 {
-			return nil, fmt.Errorf("Bad configuration, each network should have exactly one subnet")
+			return nil, fmt.Errorf("bad configuration, each network should have exactly one subnet")
 		}
 		sn := sns[0]
 		// gwID, _ := client.getGateway(id)
 		// if err != nil {
 		// 	return nil, fmt.Errorf("Bad configuration, no gateway associated to this network")
 		// }
-		net := resources.NewNetwork()
-		net.ID = network.ID
-		net.Name = network.Name
-		net.CIDR = sn.Mask
-		net.IPVersion = sn.IPVersion
+		newNet := resources.NewNetwork()
+		newNet.ID = network.ID
+		newNet.Name = network.Name
+		newNet.CIDR = sn.Mask
+		newNet.IPVersion = sn.IPVersion
 		//net.GatewayID = network.GatewayId
-		return net, nil
+		return newNet, nil
 	}
 
 	// At this point, no network has been found with given reference
@@ -229,7 +229,7 @@ func (s *Stack) ListNetworks() ([]*resources.Network, error) {
 			for _, n := range networkList {
 				sns, err := s.listSubnets(n.ID)
 				if err != nil {
-					return false, fmt.Errorf("Error getting network: %s", ProviderErrorToString(err))
+					return false, fmt.Errorf("error getting network: %s", ProviderErrorToString(err))
 				}
 				if len(sns) != 1 {
 					continue
@@ -239,13 +239,13 @@ func (s *Stack) ListNetworks() ([]*resources.Network, error) {
 				}
 				sn := sns[0]
 
-				net := resources.NewNetwork()
-				net.ID = n.ID
-				net.Name = n.Name
-				net.CIDR = sn.Mask
-				net.IPVersion = sn.IPVersion
+				newNet := resources.NewNetwork()
+				newNet.ID = n.ID
+				newNet.Name = n.Name
+				newNet.CIDR = sn.Mask
+				newNet.IPVersion = sn.IPVersion
 				// GatewayID: gwID,
-				netList = append(netList, net)
+				netList = append(netList, newNet)
 			}
 			return true, nil
 		},
@@ -271,7 +271,7 @@ func (s *Stack) DeleteNetwork(id string) error {
 
 	network, err := networks.Get(s.NetworkClient, id).Extract()
 	if err != nil {
-		log.Errorf("Failed to delete network: %+v", err)
+		log.Errorf("failed to delete network: %+v", err)
 		if strings.Contains(err.Error(), "Resource not found") {
 			log.Errorf("Inconsistent network data !!")
 		}
@@ -346,7 +346,7 @@ func (s *Stack) CreateGateway(req resources.GatewayRequest) (*resources.Host, *u
 	}
 	host, userData, err := s.CreateHost(hostReq)
 	if err != nil {
-		log.Errorf("Error creating gateway: creating host: %+v", err)
+		log.Errorf("error creating gateway: creating host: %+v", err)
 		return nil, userData, errors.Wrap(err, fmt.Sprintf("Error creating gateway : %s", ProviderErrorToString(err)))
 	}
 
@@ -522,7 +522,7 @@ func (s *Stack) createSubnet(name string, networkID string, cidr string, ipVersi
 func calcDhcpAllocationPool(cidr string) (string, string, error) {
 	_, _, err := net.ParseCIDR(cidr)
 	if err != nil {
-		return "", "", fmt.Errorf("Invalid cidr '%s'", cidr)
+		return "", "", fmt.Errorf("invalid cidr '%s'", cidr)
 	}
 
 	start, end, err := utils.CIDRToLongRange(cidr)
@@ -566,7 +566,7 @@ func (s *Stack) listSubnets(netID string) ([]Subnet, error) {
 	paginationErr := pager.EachPage(func(page pagination.Page) (bool, error) {
 		list, err := subnets.ExtractSubnets(page)
 		if err != nil {
-			return false, fmt.Errorf("Error listing subnets: %s", ProviderErrorToString(err))
+			return false, fmt.Errorf("error listing subnets: %s", ProviderErrorToString(err))
 		}
 
 		for _, subnet := range list {

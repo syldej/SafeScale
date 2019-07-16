@@ -5,6 +5,8 @@ import (
 	"sync"
 )
 
+//go:generate mockgen -destination=../mocks/mock_taskedlock.go -package=mocks github.com/CS-SI/SafeScale/lib/utils/concurrency TaskedLock
+
 // TaskedLock ...
 type TaskedLock interface {
 	RLock(Task)
@@ -70,7 +72,7 @@ func (tm *taskedLock) RUnlock(task Task) {
 	defer tm.lock.Unlock()
 
 	if _, ok := tm.readLocks[tid]; !ok {
-		panic(fmt.Sprintf("Can't RUnlock task %s: not RLocked", tid))
+		panic(fmt.Sprintf("can't RUnlock task %s: not RLocked", tid))
 	}
 	tm.readLocks[tid]--
 	if tm.readLocks[tid] == 0 {
@@ -120,10 +122,10 @@ func (tm *taskedLock) Unlock(task Task) {
 	// a TaskedLock can be Locked then RLocked without problem,
 	// but RUnlocks must have been done before Unlock.
 	if _, ok := tm.readLocks[tid]; ok {
-		panic(fmt.Sprintf("Can't Unlock task '%s': %d remaining RLock inside", tid, tm.readLocks[tid]))
+		panic(fmt.Sprintf("can't Unlock task '%s': %d remaining RLock inside", tid, tm.readLocks[tid]))
 	}
 	if _, ok := tm.writeLocks[tid]; !ok {
-		panic(fmt.Sprintf("Can't Unlock task '%s': not Locked", task.ID()))
+		panic(fmt.Sprintf("can't Unlock task '%s': not Locked", task.ID()))
 	}
 	tm.writeLocks[tid]--
 	if tm.writeLocks[tid] == 0 {

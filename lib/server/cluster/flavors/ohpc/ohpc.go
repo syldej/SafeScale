@@ -25,14 +25,15 @@ import (
 	"fmt"
 	"sync/atomic"
 	txttmpl "text/template"
+
 	// log "github.com/sirupsen/logrus"
 	rice "github.com/GeertJohan/go.rice"
 
+	pb "github.com/CS-SI/SafeScale/lib"
 	"github.com/CS-SI/SafeScale/lib/server/cluster/control"
 	"github.com/CS-SI/SafeScale/lib/server/cluster/enums/Complexity"
 	"github.com/CS-SI/SafeScale/lib/server/cluster/enums/NodeType"
 	"github.com/CS-SI/SafeScale/lib/server/cluster/flavors/ohpc/enums/ErrorCode"
-	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
 	"github.com/CS-SI/SafeScale/lib/server/install"
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
 	"github.com/CS-SI/SafeScale/lib/utils/template"
@@ -93,19 +94,29 @@ func minimumRequiredServers(task concurrency.Task, foreman control.Foreman) (int
 	return 1, privateNodeCount, 0
 }
 
-func gatewaySizing(task concurrency.Task, foreman control.Foreman) resources.HostDefinition {
-	return resources.HostDefinition{
-		Cores:    2,
-		RAMSize:  15.0,
-		DiskSize: 60,
+func gatewaySizing(task concurrency.Task, foreman control.Foreman) pb.HostDefinition {
+	return pb.HostDefinition{
+		Sizing: &pb.HostSizing{
+			MinCpuCount: 2,
+			MaxCpuCount: 4,
+			MinRamSize:  7.0,
+			MaxRamSize:  16.0,
+			MinDiskSize: 50,
+			GpuCount:    -1,
+		},
 	}
 }
 
-func nodeSizing(task concurrency.Task, foreman control.Foreman) resources.HostDefinition {
-	return resources.HostDefinition{
-		Cores:    4,
-		RAMSize:  15.0,
-		DiskSize: 100,
+func nodeSizing(task concurrency.Task, foreman control.Foreman) pb.HostDefinition {
+	return pb.HostDefinition{
+		Sizing: &pb.HostSizing{
+			MinCpuCount: 4,
+			MaxCpuCount: 8,
+			MinRamSize:  7.0,
+			MaxRamSize:  16.0,
+			MinDiskSize: 80,
+			GpuCount:    -1,
+		},
 	}
 }
 
@@ -179,25 +190,25 @@ func getTemplateBox() (*rice.Box, error) {
 	return anon.(*rice.Box), nil
 }
 
-func getGlobalSystemRequirements(task concurrency.Task, foreman control.Foreman) (*string, error) {
+func getGlobalSystemRequirements(task concurrency.Task, foreman control.Foreman) (string, error) {
 	anon := globalSystemRequirementsContent.Load()
 	if anon == nil {
 		// find the rice.Box
 		box, err := getTemplateBox()
 		if err != nil {
-			return nil, err
+			return "", err
 		}
 
 		// get file contents as string
 		tmplString, err := box.String("ohpc_install_requirements.sh")
 		if err != nil {
-			return nil, fmt.Errorf("error loading script template: %s", err.Error())
+			return "", fmt.Errorf("error loading script template: %s", err.Error())
 		}
 
 		// parse then execute the template
 		tmplPrepared, err := txttmpl.New("install_requirements").Funcs(template.MergeFuncs(funcMap, false)).Parse(tmplString)
 		if err != nil {
-			return nil, fmt.Errorf("error parsing script template: %s", err.Error())
+			return "", fmt.Errorf("error parsing script template: %s", err.Error())
 		}
 		dataBuffer := bytes.NewBufferString("")
 		cluster := foreman.Cluster()
@@ -209,11 +220,11 @@ func getGlobalSystemRequirements(task concurrency.Task, foreman control.Foreman)
 			"SSHPrivateKey": identity.Keypair.PrivateKey,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("error realizing script template: %s", err.Error())
+			return "", fmt.Errorf("error realizing script template: %s", err.Error())
 		}
 		result := dataBuffer.String()
 		globalSystemRequirementsContent.Store(&result)
 		anon = globalSystemRequirementsContent.Load()
 	}
-	return anon.(*string), nil
+	return anon.(string), nil
 }

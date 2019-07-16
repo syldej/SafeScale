@@ -44,6 +44,9 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// VPL: SSH ControlMaster options: -oControlMaster=auto -oControlPath=~/.ssh/sockets/socket-%C -oControlPersist=5m
+//      Quick tries not very successful...
+//      Should not be used for interactive ssh connection...
 const sshOptions = "-q -oIdentitiesOnly=yes -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null -oPubkeyAuthentication=yes -oPasswordAuthentication=no"
 
 var (
@@ -158,18 +161,18 @@ func (tunnel *SSHTunnel) Close() error {
 	err := tunnel.cmd.Process.Kill()
 	if err != nil {
 		log.Errorf("tunnel.cmd.Process.Kill() failed: %s\n", reflect.TypeOf(err).String())
-		return fmt.Errorf("Unable to close tunnel :%s", err.Error())
+		return fmt.Errorf("unable to close tunnel :%s", err.Error())
 	}
 	// Kills remaining processes if there are some
-	bytes, err := exec.Command("pgrep", "-f", tunnel.cmdString).Output()
+	bytesCmd, err := exec.Command("pgrep", "-f", tunnel.cmdString).Output()
 	if err == nil {
-		portStr := strings.Trim(string(bytes), "\n")
+		portStr := strings.Trim(string(bytesCmd), "\n")
 		_, err = strconv.Atoi(portStr)
 		if err == nil {
 			err = exec.Command("kill", "-9", portStr).Run()
 			if err != nil {
 				log.Errorf("kill -9 failed: %s\n", reflect.TypeOf(err).String())
-				return fmt.Errorf("Unable to close tunnel :%s", err.Error())
+				return fmt.Errorf("unable to close tunnel :%s", err.Error())
 			}
 		}
 	}
@@ -266,6 +269,19 @@ func buildTunnel(cfg *SSHConfig) (*SSHTunnel, error) {
 	//	err = cmd.Wait()
 	if err != nil {
 		return nil, err
+	}
+
+	if forensics := os.Getenv("SAFESCALE_FORENSICS"); forensics != "" {
+		if cmdString != "" {
+			log.Debugf("[TRACE] %s", cmdString)
+		}
+		_ = os.MkdirAll(utils.AbsPathify(fmt.Sprintf("$HOME/.safescale/forensics/%s", cfg.Host)), 0777)
+		partials := strings.Split(f.Name(), "/")
+		dumpName := utils.AbsPathify(fmt.Sprintf("$HOME/.safescale/forensics/%s/%s.sshkey", cfg.Host, partials[len(partials)-1]))
+		err = ioutil.WriteFile(dumpName, []byte(cfg.GatewayConfig.PrivateKey), 0644)
+		if err != nil {
+			log.Warnf("[TRACE] Failure storing key in %s", dumpName)
+		}
 	}
 
 	for nbiter := 0; !isTunnelReady(localPort) && nbiter < 100; nbiter++ {
@@ -398,36 +414,33 @@ func (sc *SSHCommand) Run() (int, string, string, error) {
 	// Set up the outputs (std and err)
 	stdOut, err := sc.StdoutPipe()
 	if err != nil {
-		return 0, "", "", err
+		return -1, "", "", err
 	}
 	stderr, err := sc.StderrPipe()
 	if err != nil {
-		return 0, "", "", err
+		return -1, "", "", err
 	}
 
 	// Launch the command and wait for its execution
 	if err = sc.Start(); err != nil {
-		return 0, "", "", err
+		return -1, "", "", err
 	}
 
 	msgOut, err := ioutil.ReadAll(stdOut)
 	if err != nil {
-		return 0, "", "", err
+		return -1, "", "", err
 	}
 
 	msgErr, err := ioutil.ReadAll(stderr)
 	if err != nil {
-		return 0, "", "", err
+		return -1, "", "", err
 	}
 
 	err = sc.Wait()
 	if err != nil {
-		log.Warnf("Error waiting for command: %v", err)
-	}
-	if err != nil {
 		msgError, retCode, erro := ExtractRetCode(err)
 		if erro != nil {
-			return 0, "", "", err
+			return -1, "", "", err
 		}
 		return retCode, string(msgOut[:]), fmt.Sprint(string(msgErr[:]), msgError), nil
 	}
@@ -496,10 +509,10 @@ func (sc *SSHCommand) RunWithTimeout(timeout time.Duration) (int, string, string
 			return retCode, string(msgOut[:]), fmt.Sprint(string(msgErr[:]), msgError), nil
 		}
 		if !issues {
-			log.Warnf("There have been issues running this command, please check daemon logs")
+			log.Warnf("There have been issues running this command [%s], please check daemon logs", sc.Display())
 		}
 	case <-time.After(timeout):
-		errMsg := fmt.Sprintf("Timeout of (%s) waiting for the command to end", timeout)
+		errMsg := fmt.Sprintf("Timeout of (%s) waiting for the command [%s] to end", timeout, sc.Display())
 		log.Warnf(errMsg)
 		return 0, "", "", fmt.Errorf(errMsg)
 	}
@@ -512,10 +525,10 @@ func (sc *SSHCommand) cleanup() error {
 	err2 := utils.LazyRemove(sc.keyFile.Name())
 	if err1 != nil {
 		log.Errorf("closeTunneling() failed: %s\n", reflect.TypeOf(err1).String())
-		return fmt.Errorf("Unable to close SSH tunnels: %s", err1.Error())
+		return fmt.Errorf("unable to close SSH tunnels: %s", err1.Error())
 	}
 	if err2 != nil {
-		return fmt.Errorf("Unable to close SSH tunnels: %s", err2.Error())
+		return fmt.Errorf("unable to close SSH tunnels: %s", err2.Error())
 	}
 	return nil
 }
@@ -550,9 +563,7 @@ func (ssh *SSHConfig) CreateTunneling() ([]*SSHTunnel, *SSHConfig, error) {
 	var tunnels []*SSHTunnel
 	tunnel, err := recCreateTunnels(ssh, &tunnels)
 	if err != nil {
-		if err != nil {
-			return nil, nil, fmt.Errorf("Unable to create SSH Tunnels : %s", err.Error())
-		}
+		return nil, nil, fmt.Errorf("unable to create SSH Tunnels : %s", err.Error())
 	}
 	sshConfig := *ssh
 	if tunnel == nil {
@@ -560,9 +571,6 @@ func (ssh *SSHConfig) CreateTunneling() ([]*SSHTunnel, *SSHConfig, error) {
 	}
 
 	if ssh.GatewayConfig != nil {
-		if err != nil {
-			return nil, nil, fmt.Errorf("Unable to create SSH Tunnel : %s", err.Error())
-		}
 		sshConfig.Port = tunnel.port
 		sshConfig.Host = "127.0.0.1"
 	}
@@ -572,7 +580,7 @@ func (ssh *SSHConfig) CreateTunneling() ([]*SSHTunnel, *SSHConfig, error) {
 func createSSHCmd(sshConfig *SSHConfig, cmdString string, withSudo bool) (string, *os.File, error) {
 	f, err := CreateTempFileFromString(sshConfig.PrivateKey, 0400)
 	if err != nil {
-		return "", nil, fmt.Errorf("Unable to create temporary key file: %s", err.Error())
+		return "", nil, fmt.Errorf("unable to create temporary key file: %s", err.Error())
 	}
 
 	options := sshOptions + " -oLogLevel=error"
@@ -584,6 +592,19 @@ func createSSHCmd(sshConfig *SSHConfig, cmdString string, withSudo bool) (string
 		sshConfig.User,
 		sshConfig.Host,
 	)
+
+	if forensics := os.Getenv("SAFESCALE_FORENSICS"); forensics != "" {
+		if cmdString != "" {
+			log.Debugf("[TRACE] %s", cmdString)
+		}
+		_ = os.MkdirAll(utils.AbsPathify(fmt.Sprintf("$HOME/.safescale/forensics/%s", sshConfig.Host)), 0777)
+		partials := strings.Split(f.Name(), "/")
+		dumpName := utils.AbsPathify(fmt.Sprintf("$HOME/.safescale/forensics/%s/%s.sshkey", sshConfig.Host, partials[len(partials)-1]))
+		err = ioutil.WriteFile(dumpName, []byte(sshConfig.PrivateKey), 0644)
+		if err != nil {
+			log.Warnf("[TRACE] Failure storing key in %s", dumpName)
+		}
+	}
 
 	sudoOpt := ""
 	if withSudo {
@@ -611,11 +632,11 @@ func (ssh *SSHConfig) SudoCommand(cmdString string) (*SSHCommand, error) {
 func (ssh *SSHConfig) command(cmdString string, withSudo bool) (*SSHCommand, error) {
 	tunnels, sshConfig, err := ssh.CreateTunneling()
 	if err != nil {
-		return nil, fmt.Errorf("Unable to create command : %s", err.Error())
+		return nil, fmt.Errorf("unable to create command : %s", err.Error())
 	}
 	sshCmdString, keyFile, err := createSSHCmd(sshConfig, cmdString, withSudo)
 	if err != nil {
-		return nil, fmt.Errorf("Unable to create command : %s", err.Error())
+		return nil, fmt.Errorf("unable to create command : %s", err.Error())
 	}
 	cmd := exec.Command("bash", "-c", sshCmdString)
 	sshCommand := SSHCommand{

@@ -22,19 +22,19 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
-	google_protobuf "github.com/golang/protobuf/ptypes/empty"
+	protobuf "github.com/golang/protobuf/ptypes/empty"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 
-	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	pb "github.com/CS-SI/SafeScale/lib"
+	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	"github.com/CS-SI/SafeScale/lib/server/utils"
 )
 
 // Tenant structure to handle name and clientAPI for a tenant
 type Tenant struct {
 	name    string
-	Service *iaas.Service
+	Service iaas.Service
 }
 
 var (
@@ -68,7 +68,7 @@ func getCurrentTenant() *Tenant {
 type TenantListener struct{}
 
 // List registerd tenants
-func (s *TenantListener) List(ctx context.Context, in *google_protobuf.Empty) (*pb.TenantList, error) {
+func (s *TenantListener) List(ctx context.Context, in *protobuf.Empty) (*pb.TenantList, error) {
 	log.Infoln("Listeners: receiving \"tenant list\"")
 	log.Debugln(">>> TenantListener::List()")
 	defer log.Debugln("<<< TenantListener::List()")
@@ -96,7 +96,7 @@ func (s *TenantListener) List(ctx context.Context, in *google_protobuf.Empty) (*
 }
 
 // Get returns the name of the current tenant used
-func (s *TenantListener) Get(ctx context.Context, in *google_protobuf.Empty) (*pb.TenantName, error) {
+func (s *TenantListener) Get(ctx context.Context, in *protobuf.Empty) (*pb.TenantName, error) {
 	log.Infoln("Listeners: receiving \"tenant get\"")
 	log.Debugln(">>> TenantListener::Get()")
 	defer log.Debugln(">>> TenantListener::Get()")
@@ -116,7 +116,7 @@ func (s *TenantListener) Get(ctx context.Context, in *google_protobuf.Empty) (*p
 }
 
 // Set the the tenant to use for each command
-func (s *TenantListener) Set(ctx context.Context, in *pb.TenantName) (*google_protobuf.Empty, error) {
+func (s *TenantListener) Set(ctx context.Context, in *pb.TenantName) (*protobuf.Empty, error) {
 	log.Infof("Listeners: receiving \"tenant set %s\"", in.Name)
 	log.Debugf(">>> TenantListener::Set(%s)", in.Name)
 	defer log.Debugf("<<< TenantListener::Set(%s)", in.Name)
@@ -128,16 +128,16 @@ func (s *TenantListener) Set(ctx context.Context, in *pb.TenantName) (*google_pr
 	}
 
 	if currentTenant != nil && currentTenant.name == in.GetName() {
-		return &google_protobuf.Empty{}, nil
+		return &protobuf.Empty{}, nil
 	}
 
 	service, err := iaas.UseService(in.GetName())
 	if err != nil {
-		return &google_protobuf.Empty{}, fmt.Errorf("Unable to set tenant '%s': %s", in.GetName(), err.Error())
+		return &protobuf.Empty{}, fmt.Errorf("unable to set tenant '%s': %s", in.GetName(), err.Error())
 	}
 	currentTenant = &Tenant{name: in.GetName(), Service: service}
 	log.Infof("Current tenant is now '%s'", in.GetName())
-	return &google_protobuf.Empty{}, nil
+	return &protobuf.Empty{}, nil
 }
 
 //StorageTenants strcture handle tenants names and storages services for a group of storage tenants
@@ -176,7 +176,7 @@ func getCurrentStorageTenants() *StorageTenants {
 }
 
 // StorageList list registerd storage tenants
-func (s *TenantListener) StorageList(ctx context.Context, in *google_protobuf.Empty) (*pb.TenantList, error) {
+func (s *TenantListener) StorageList(ctx context.Context, in *protobuf.Empty) (*pb.TenantList, error) {
 	log.Infoln("Listeners: receiving \"tenant storage-list\"")
 	log.Debugln(">>> TenantListener::StorageList()")
 	defer log.Debugln("<<< TenantListener::StorageList()")
@@ -208,7 +208,7 @@ func (s *TenantListener) StorageList(ctx context.Context, in *google_protobuf.Em
 }
 
 // StorageGet returns the name of the current storage tenants used for data related commands
-func (s *TenantListener) StorageGet(ctx context.Context, in *google_protobuf.Empty) (*pb.TenantNameList, error) {
+func (s *TenantListener) StorageGet(ctx context.Context, in *protobuf.Empty) (*pb.TenantNameList, error) {
 	log.Infoln("Listeners: receiving \"tenant storage-get\"")
 	log.Debugln(">>> TenantListener::StorageGet()")
 	defer log.Debugln(">>> TenantListener::StorageGet()")
@@ -228,7 +228,7 @@ func (s *TenantListener) StorageGet(ctx context.Context, in *google_protobuf.Emp
 }
 
 // StorageSet set the tenants to use for data related commands
-func (s *TenantListener) StorageSet(ctx context.Context, in *pb.TenantNameList) (*google_protobuf.Empty, error) {
+func (s *TenantListener) StorageSet(ctx context.Context, in *pb.TenantNameList) (*protobuf.Empty, error) {
 
 	log.Infof("Listeners: receiving \"tenant storage-set %v\"", in.Names)
 	log.Debugf(">>> TenantListener::StorageSet(%v)", in.Names)
@@ -241,10 +241,10 @@ func (s *TenantListener) StorageSet(ctx context.Context, in *pb.TenantNameList) 
 
 	storageServices, err := iaas.UseStorages(in.GetNames())
 	if err != nil {
-		return &google_protobuf.Empty{}, fmt.Errorf("Unable to set tenants '%v': %s", in.GetNames(), err.Error())
+		return &protobuf.Empty{}, fmt.Errorf("unable to set tenants '%v': %s", in.GetNames(), err.Error())
 	}
 
 	currentStorageTenants = &StorageTenants{names: in.GetNames(), StorageServices: storageServices}
 	log.Infof("Current storage tenants are now '%v'", in.GetNames())
-	return &google_protobuf.Empty{}, nil
+	return &protobuf.Empty{}, nil
 }

@@ -150,9 +150,24 @@ func nexusFeature() *Feature {
 	}
 }
 
-// elasticSearchFeature ...
-func elasticSearchFeature() *Feature {
+// elasticsearchFeature ...
+func elasticsearchFeature() *Feature {
 	name := "elasticsearch"
+	filename, specs, err := loadSpecFile(name)
+	if err != nil {
+		panic(err.Error())
+	}
+	return &Feature{
+		displayName: name,
+		fileName:    filename,
+		embedded:    true,
+		specs:       specs,
+	}
+}
+
+// logstashFeature ...
+func logstashFeature() *Feature {
+	name := "logstash"
 	filename, specs, err := loadSpecFile(name)
 	if err != nil {
 		panic(err.Error())
@@ -183,21 +198,6 @@ func helmFeature() *Feature {
 // sparkFeature ...
 func sparkFeature() *Feature {
 	name := "spark"
-	filename, specs, err := loadSpecFile(name)
-	if err != nil {
-		panic(err.Error())
-	}
-	return &Feature{
-		displayName: name,
-		fileName:    filename,
-		embedded:    true,
-		specs:       specs,
-	}
-}
-
-// reverseProxyFeature ...
-func reverseProxyFeature() *Feature {
-	name := "reverseproxy"
 	filename, specs, err := loadSpecFile(name)
 	if err != nil {
 		panic(err.Error())
@@ -360,9 +360,69 @@ func filebeatFeature() *Feature {
 	}
 }
 
-// keycloakFeature ...
-func keycloakFeature() *Feature {
-	name := "keycloak"
+// postgres4gatewayFeature ...
+func postgres4gatewayFeature() *Feature {
+	name := "postgres4gateway"
+	filename, specs, err := loadSpecFile(name)
+	if err != nil {
+		panic(err.Error())
+	}
+	return &Feature{
+		displayName: name,
+		fileName:    filename,
+		embedded:    true,
+		specs:       specs,
+	}
+}
+
+// kong4gatewayFeature ...
+func kong4gatewayFeature() *Feature {
+	name := "kong4gateway"
+	filename, specs, err := loadSpecFile(name)
+	if err != nil {
+		panic(err.Error())
+	}
+	return &Feature{
+		displayName: name,
+		fileName:    filename,
+		embedded:    true,
+		specs:       specs,
+	}
+}
+
+// keycloak4gatewayFeature ...
+func keycloak4gatewayFeature() *Feature {
+	name := "keycloak4gateway"
+	filename, specs, err := loadSpecFile(name)
+	if err != nil {
+		panic(err.Error())
+	}
+	return &Feature{
+		displayName: name,
+		fileName:    filename,
+		embedded:    true,
+		specs:       specs,
+	}
+}
+
+// kibanaFeature ...
+func kibanaFeature() *Feature {
+	name := "kibana"
+	filename, specs, err := loadSpecFile(name)
+	if err != nil {
+		panic(err.Error())
+	}
+	return &Feature{
+		displayName: name,
+		fileName:    filename,
+		embedded:    true,
+		specs:       specs,
+	}
+}
+
+// elassandraFeature ...
+func elassandraFeature() *Feature {
+	name := "elassandra"
 	filename, specs, err := loadSpecFile(name)
 	if err != nil {
 		panic(err.Error())

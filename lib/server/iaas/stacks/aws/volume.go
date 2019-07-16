@@ -1,34 +1,70 @@
-/*
- * Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 package aws
 
 import (
 	"fmt"
-
-	// log "github.com/sirupsen/logrus"
-
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/ec2"
-
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/VolumeSpeed"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/VolumeState"
-
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
 )
+
+func (s *Stack) CreateVolume(request resources.VolumeRequest) (*resources.Volume, error) {
+	v, err := s.EC2Service.CreateVolume(&ec2.CreateVolumeInput{
+		Size:             aws.Int64(int64(request.Size)),
+		VolumeType:       aws.String(toVolumeType(request.Speed)),
+		AvailabilityZone: aws.String(s.AwsConfig.Zone),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = s.EC2Service.CreateTags(&ec2.CreateTagsInput{
+		Resources: []*string{v.VolumeId},
+		Tags: []*ec2.Tag{
+			{
+				Key:   aws.String("Name"),
+				Value: aws.String(request.Name),
+			},
+		},
+	})
+	if err != nil {
+		// FIXME Should we delete the volume if we cannot name it ?
+		return nil, err
+	}
+
+	volume := resources.Volume{
+		ID:    aws.StringValue(v.VolumeId),
+		Name:  request.Name, // FIXME Better check the tag is present in v
+		Size:  int(aws.Int64Value(v.Size)),
+		Speed: toVolumeSpeed(v.VolumeType),
+		State: toVolumeState(v.State),
+	}
+	return &volume, nil
+}
+
+func (s *Stack) GetVolume(id string) (*resources.Volume, error) {
+	out, err := s.EC2Service.DescribeVolumes(&ec2.DescribeVolumesInput{
+		VolumeIds: []*string{aws.String(id)},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if len(out.Volumes) == 0 {
+		return nil, resources.ResourceNotFoundError("Volume", id)
+	}
+
+	v := out.Volumes[0]
+	volume := resources.Volume{
+		ID:    aws.StringValue(v.VolumeId),
+		Name:  aws.StringValue(v.VolumeId), // FIXME Append name as Tags
+		Size:  int(aws.Int64Value(v.Size)),
+		Speed: toVolumeSpeed(v.VolumeType),
+		State: toVolumeState(v.State),
+	}
+	return &volume, nil
+}
 
 func toVolumeType(speed VolumeSpeed.Enum) string {
 	switch speed {
@@ -89,40 +125,58 @@ func toVolumeState(s *string) VolumeState.Enum {
 	return VolumeState.OTHER
 }
 
-// CreateVolume creates a block volume
-// - name is the name of the volume
-// - size is the size of the volume in GB
-// - volumeType is the type of volume to create, if volumeType is empty the driver use a default type
-func (s *Stack) CreateVolume(request resources.VolumeRequest) (*resources.Volume, error) {
-	panic("implement me")
-}
-
-// GetVolume returns the volume identified by id
-func (s *Stack) GetVolume(id string) (*resources.Volume, error) {
-	panic("implement me")
-}
-
-// ListVolumes list available volumes
 func (s *Stack) ListVolumes() ([]resources.Volume, error) {
-	panic("implement me")
+	out, err := s.EC2Service.DescribeVolumes(&ec2.DescribeVolumesInput{})
+	if err != nil {
+		return nil, err
+	}
+	volumes := []resources.Volume{}
+	for _, v := range out.Volumes {
+		volumeName := aws.StringValue(v.VolumeId)
+		if len(v.Tags) > 0 {
+			for _, tag := range v.Tags {
+				if tag != nil {
+					if aws.StringValue(tag.Key) == "Name" {
+						volumeName = aws.StringValue(tag.Value)
+					}
+				}
+			}
+		}
+
+		volume := resources.Volume{
+			ID:    aws.StringValue(v.VolumeId),
+			Name:  volumeName,
+			Size:  int(aws.Int64Value(v.Size)),
+			Speed: toVolumeSpeed(v.VolumeType),
+			State: toVolumeState(v.State),
+		}
+		volumes = append(volumes, volume)
+	}
+
+	return volumes, nil
 }
 
-// DeleteVolume deletes the volume identified by id
 func (s *Stack) DeleteVolume(id string) error {
-	panic("implement me")
+	_, err := s.EC2Service.DeleteVolume(&ec2.DeleteVolumeInput{
+		VolumeId: aws.String(id),
+	})
+	return err
 }
 
-// CreateVolumeAttachment attaches a volume to an host
-// - 'name' the name of the volume attachment
-// - 'volume' the volume to attach
-// - 'host' on which the volume is attached
 func (s *Stack) CreateVolumeAttachment(request resources.VolumeAttachmentRequest) (string, error) {
-	panic("implement me")
+	va, err := s.EC2Service.AttachVolume(&ec2.AttachVolumeInput{
+		Device:     aws.String(request.Name),
+		InstanceId: aws.String(request.HostID),
+		VolumeId:   aws.String(request.VolumeID),
+	})
+	if err != nil {
+		return "", err
+	}
+	return aws.StringValue(va.Device) + aws.StringValue(va.VolumeId), nil
 }
 
-// GetVolumeAttachment returns the volume attachment identified by id
 func (s *Stack) GetVolumeAttachment(serverID, id string) (*resources.VolumeAttachment, error) {
-	out, err := s.EC2.DescribeVolumes(&ec2.DescribeVolumesInput{
+	out, err := s.EC2Service.DescribeVolumes(&ec2.DescribeVolumesInput{
 		VolumeIds: []*string{aws.String(id)},
 	})
 	if err != nil {
@@ -132,22 +186,44 @@ func (s *Stack) GetVolumeAttachment(serverID, id string) (*resources.VolumeAttac
 	for _, va := range v.Attachments {
 		if *va.InstanceId == serverID {
 			return &resources.VolumeAttachment{
-				Device:   pStr(va.Device),
-				ServerID: pStr(va.InstanceId),
-				VolumeID: pStr(va.VolumeId),
+				Device:   aws.StringValue(va.Device),
+				ServerID: aws.StringValue(va.InstanceId),
+				VolumeID: aws.StringValue(va.VolumeId),
 			}, nil
 		}
 	}
-	return nil, resources.ResourceNotAvailableError("volume", fmt.Sprintf("volume '%s' doesn't seem to be attached to host '%s'", id, serverID))
+	return nil, fmt.Errorf("volume attachment of volume %s on server %s does not exist", serverID, id)
 }
 
-// ListVolumeAttachments lists available volume attachment
 func (s *Stack) ListVolumeAttachments(serverID string) ([]resources.VolumeAttachment, error) {
-	panic("implement me")
-
+	out, err := s.EC2Service.DescribeVolumes(&ec2.DescribeVolumesInput{
+		Filters: []*ec2.Filter{
+			&ec2.Filter{
+				Name:   aws.String("attachment.instance-id"), // FIXME What ?
+				Values: []*string{aws.String(serverID)},
+			},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	vas := []resources.VolumeAttachment{}
+	for _, v := range out.Volumes {
+		for _, va := range v.Attachments {
+			vas = append(vas, resources.VolumeAttachment{
+				Device:   aws.StringValue(va.Device),
+				ServerID: aws.StringValue(va.InstanceId),
+				VolumeID: aws.StringValue(va.VolumeId),
+			})
+		}
+	}
+	return vas, nil
 }
 
-// DeleteVolumeAttachment deletes the volume attachment identifed by id
 func (s *Stack) DeleteVolumeAttachment(serverID, id string) error {
-	panic("implement me")
+	_, err := s.EC2Service.DetachVolume(&ec2.DetachVolumeInput{
+		InstanceId: aws.String(serverID),
+		VolumeId:   aws.String(id),
+	})
+	return err
 }

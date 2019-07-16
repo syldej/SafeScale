@@ -19,6 +19,7 @@ package resources
 import (
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/IPVersion"
 	"github.com/CS-SI/SafeScale/lib/utils/serialize"
+	"github.com/sirupsen/logrus"
 )
 
 // GatewayRequest to create a Gateway into a network
@@ -61,6 +62,33 @@ func NewNetwork() *Network {
 	return &Network{
 		Properties: serialize.NewJSONProperties("resources.network"),
 	}
+}
+
+func (n *Network) OK() bool {
+	result := true
+	if n == nil {
+		return false
+	}
+
+	result = result && (n.ID != "")
+	if n.ID == "" {
+		logrus.Debug("Network without ID")
+	}
+	result = result && (n.Name != "")
+	if n.Name == "" {
+		logrus.Debug("Network without name")
+	}
+	result = result && (n.CIDR != "")
+	if n.CIDR == "" {
+		logrus.Debug("Network without CIDR")
+	}
+	result = result && (n.GatewayID != "")
+	if n.GatewayID == "" {
+		logrus.Debug("Network without Gateway")
+	}
+	result = result && (n.Properties != nil)
+
+	return result
 }
 
 // Serialize serializes Host instance into bytes (output json code)

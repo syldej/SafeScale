@@ -19,9 +19,10 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"strings"
+
 	"github.com/CS-SI/SafeScale/lib/client"
 	srvutils "github.com/CS-SI/SafeScale/lib/server/utils"
-	"strings"
 
 	log "github.com/sirupsen/logrus"
 
@@ -44,7 +45,7 @@ import (
 
 // NetworkAPI defines API to manage networks
 type NetworkAPI interface {
-	Create(context.Context, string, string, IPVersion.Enum, int, float32, int, string, string) (*resources.Network, error)
+	Create(context.Context, string, string, IPVersion.Enum, resources.SizingRequirements, string, string) (*resources.Network, error)
 	List(context.Context, bool) ([]*resources.Network, error)
 	Inspect(context.Context, string) (*resources.Network, error)
 	Delete(context.Context, string) error
@@ -52,12 +53,12 @@ type NetworkAPI interface {
 
 // NetworkHandler an implementation of NetworkAPI
 type NetworkHandler struct {
-	service   *iaas.Service
+	service   iaas.Service
 	ipVersion IPVersion.Enum
 }
 
 // NewNetworkHandler Creates new Network service
-func NewNetworkHandler(svc *iaas.Service) NetworkAPI {
+func NewNetworkHandler(svc iaas.Service) NetworkAPI {
 	return &NetworkHandler{
 		service: svc,
 	}
@@ -67,22 +68,32 @@ func NewNetworkHandler(svc *iaas.Service) NetworkAPI {
 func (handler *NetworkHandler) Create(
 	ctx context.Context,
 	name string, cidr string, ipVersion IPVersion.Enum,
-	cpu int, ram float32, disk int, theos string, gwname string,
+	sizing resources.SizingRequirements, theos string, gwname string,
 ) (*resources.Network, error) {
 
-	log.Debugf(">>> safescale.server.handlers.NetworkHandler::Create()")
-	defer log.Debugf("<<< safescale.server.handlers.NetworkHandler::Create()")
+	log.Debugf(">>> lib.server.handlers.NetworkHandler::Create()")
+	defer log.Debugf("<<< lib.server.handlers.NetworkHandler::Create()")
 
 	// Verify that the network doesn't exist first
 	_, err := handler.service.GetNetworkByName(name)
 	if err != nil {
 		switch err.(type) {
 		case resources.ErrResourceNotFound:
+		case utils.ErrNotFound:
 		default:
 			return nil, infraErrf(err, "failed to check if a network already exists with name '%s'", name)
 		}
 	} else {
 		return nil, logicErr(fmt.Errorf("network '%s' already exists", name))
+	}
+
+	// Verify the CIDR is not routable
+	routable, err := utils.IsCIDRRoutable(cidr)
+	if err != nil {
+		return nil, logicErr(fmt.Errorf("failed to determine if CIDR is not routable: %v", err))
+	}
+	if routable {
+		return nil, logicErr(fmt.Errorf("can't create such a network, CIDR must be not routable; please choose an appropriate CIDR (RFC1918)"))
 	}
 
 	// Create the network
@@ -102,7 +113,7 @@ func (handler *NetworkHandler) Create(
 		if err != nil {
 			derr := handler.service.DeleteNetwork(network.ID)
 			if derr != nil {
-				log.Errorf("Failed to delete network: %+v", derr)
+				log.Errorf("failed to delete network: %+v", derr)
 			}
 		}
 	}()
@@ -118,7 +129,7 @@ func (handler *NetworkHandler) Create(
 		if err != nil {
 			derr := mn.Delete()
 			if derr != nil {
-				log.Errorf("Failed to delete network metadata: %+v", derr)
+				log.Errorf("failed to delete network metadata: %+v", derr)
 			}
 		}
 	}()
@@ -130,15 +141,8 @@ func (handler *NetworkHandler) Create(
 	log.Debugf("Creating compute resource '%s' ...", gwname)
 
 	// Create a gateway
-
 	var template resources.HostTemplate
-	tpls, err := handler.service.SelectTemplatesBySize(resources.SizingRequirements{
-		MinCores:    cpu,
-		MinRAMSize:  ram,
-		MinDiskSize: disk,
-		MinGPU:      -1,
-		MinFreq:     0,
-	}, false)
+	tpls, err := handler.service.SelectTemplatesBySize(sizing, false)
 	if err != nil {
 		return nil, infraErrf(err, "Error creating network: Error selecting template")
 	}
@@ -158,7 +162,8 @@ func (handler *NetworkHandler) Create(
 		msg += ")"
 		log.Infof(msg)
 	} else {
-		return nil, logicErr(fmt.Errorf("Error creating network: No template found for %v cpu, %v GB of ram, %v GB of system disk", cpu, ram, disk))
+		err = logicErr(fmt.Errorf("error creating network: no host template matching requirements for gateway"))
+		return nil, err
 	}
 	img, err := handler.service.SearchImage(theos)
 	if err != nil {
@@ -210,9 +215,11 @@ func (handler *NetworkHandler) Create(
 	err = gw.Properties.LockForWrite(HostProperty.SizingV1).ThenUse(func(v interface{}) error {
 		gwSizingV1 := v.(*propsv1.HostSizing)
 		gwSizingV1.RequestedSize = &propsv1.HostSize{
-			Cores:    cpu,
-			RAMSize:  ram,
-			DiskSize: disk,
+			Cores:     sizing.MinCores,
+			RAMSize:   sizing.MinRAMSize,
+			DiskSize:  sizing.MinDiskSize,
+			GPUNumber: sizing.MinGPU,
+			CPUFreq:   sizing.MinFreq,
 		}
 		return nil
 	})
@@ -232,7 +239,7 @@ func (handler *NetworkHandler) Create(
 			log.Warnf("Cleaning up on failure, deleting gateway '%s' metadata", gw.Name)
 			derr := mg.Delete()
 			if derr != nil {
-				log.Errorf("Failed to delete gateway '%s' metadata: %+v", gw.Name, derr)
+				log.Errorf("failed to delete gateway '%s' metadata: %+v", gw.Name, derr)
 			}
 		}
 	}()
@@ -320,8 +327,8 @@ func (handler *NetworkHandler) Create(
 
 // List returns the network list
 func (handler *NetworkHandler) List(ctx context.Context, all bool) ([]*resources.Network, error) {
-	log.Debugf(">>> safescale.server.handlers.NetworkHandler::List(%v)", all)
-	defer log.Debugf("<<< safescale.server.handlers.NetworkHandler::List(%v)", all)
+	log.Debugf(">>> lib.server.handlers.NetworkHandler::List(%v)", all)
+	defer log.Debugf("<<< lib.server.handlers.NetworkHandler::List(%v)", all)
 
 	if all {
 		return handler.service.ListNetworks()
@@ -345,8 +352,8 @@ func (handler *NetworkHandler) List(ctx context.Context, all bool) ([]*resources
 
 // Inspect returns the network identified by ref, ref can be the name or the id
 func (handler *NetworkHandler) Inspect(ctx context.Context, ref string) (*resources.Network, error) {
-	defer log.Debugf("<<< safescale.server.handlers.NetworkHandler::Inspect(%s)", ref)
-	log.Debugf(">>> safescale.server.handlers.NetworkHandler::Inspect(%s)", ref)
+	defer log.Debugf("<<< lib.server.handlers.NetworkHandler::Inspect(%s)", ref)
+	log.Debugf(">>> lib.server.handlers.NetworkHandler::Inspect(%s)", ref)
 
 	mn, err := metadata.LoadNetwork(handler.service, ref)
 	if err != nil {
@@ -357,13 +364,15 @@ func (handler *NetworkHandler) Inspect(ctx context.Context, ref string) (*resour
 
 // Delete deletes network referenced by ref
 func (handler *NetworkHandler) Delete(ctx context.Context, ref string) error {
-	log.Debugf(">>> safescale.server.handlers.NetworkHandler::Delete(%s)", ref)
-	defer log.Debugf("<<< safescale.server.handlers.NetworkHandler::Delete(%s)", ref)
+	log.Debugf(">>> lib.server.handlers.NetworkHandler::Delete(%s)", ref)
+	defer log.Debugf("<<< lib.server.handlers.NetworkHandler::Delete(%s)", ref)
 
 	mn, err := metadata.LoadNetwork(handler.service, ref)
 	if err != nil {
-		if _, ok := err.(resources.ErrResourceNotFound); !ok {
-			err = infraErrf(err, "failed to load metadata of network '%s', trying to delete network anyway", ref)
+		notFound := utils.IsNotFoundError(err)
+
+		if !notFound {
+			err = infraErrf(err, "failed to load metadata of network '%s', trying to delete network anyway", ref) // FIXME Seriously ??
 			cleanErr := handler.service.DeleteNetwork(ref)
 			if cleanErr != nil {
 				_ = infraErrf(cleanErr, "error deleting network on cleanup after failure to load metadata '%s'", ref)
@@ -408,14 +417,16 @@ func (handler *NetworkHandler) Delete(ctx context.Context, ref string) error {
 		return infraErr(err)
 	}
 
+	// FIXME Failure loading metadata not properly handled, if line 422 is true, then line 466 will panic
+
 	// 1st delete gateway
-	var metadataHost *resources.Host
+	// var metadataHost *resources.Host
 	if gwID != "" {
 		mh, err := metadata.LoadHost(handler.service, gwID)
 		if err != nil {
 			_ = infraErr(err)
 		} else {
-			metadataHost = mh.Get()
+			// metadataHost := mh.Get()
 
 			err = handler.service.DeleteGateway(gwID)
 			// allow no gateway, but log it
@@ -427,13 +438,14 @@ func (handler *NetworkHandler) Delete(ctx context.Context, ref string) error {
 				return infraErr(err)
 			}
 		}
-
 	}
 
 	// 2nd delete network, with tolerance
 	err = handler.service.DeleteNetwork(network.ID)
 	if err != nil {
-		if _, ok := err.(resources.ErrResourceNotFound); !ok {
+		notFound := utils.IsNotFoundError(err)
+
+		if !notFound {
 			// Delete metadata,
 			log.Error("can't delete network")
 			err = mn.Delete()
@@ -452,29 +464,39 @@ func (handler *NetworkHandler) Delete(ctx context.Context, ref string) error {
 		return infraErr(err)
 	}
 
-	select {
-	case <-ctx.Done():
-		log.Warnf("Network delete cancelled by user")
-		hostSizing := propsv1.NewHostSizing()
-		err := metadataHost.Properties.LockForRead(HostProperty.SizingV1).ThenUse(func(v interface{}) error {
-			hostSizing = v.(*propsv1.HostSizing)
-			return nil
-		})
-		if err != nil {
-			return fmt.Errorf("Failed to get gateway sizingV1")
-		}
-		//os name of the gw is not stored in metadatas so we used ubuntu 16.04 by default
-		networkBis, err := handler.Create(context.Background(), network.Name, network.CIDR, network.IPVersion, hostSizing.AllocatedSize.Cores, hostSizing.AllocatedSize.RAMSize, hostSizing.AllocatedSize.DiskSize, "Ubuntu 16.04", metadataHost.Name)
-		if err != nil {
-			return fmt.Errorf("Failed to stop network deletion")
-		}
-		buf, err := networkBis.Serialize()
-		if err != nil {
-			return fmt.Errorf("Deleted Network recreated by safescale")
-		}
-		return fmt.Errorf("Deleted Network recreated by safescale : %s", buf)
-	default:
-	}
+	// select {
+	// case <-ctx.Done():
+	// 	log.Warnf("Network delete cancelled by user")
+	// 	hostSizingV1 := propsv1.NewHostSizing()
+	// 	err := metadataHost.Properties.LockForRead(HostProperty.SizingV1).ThenUse(func(v interface{}) error {
+	// 		hostSizingV1 = v.(*propsv1.HostSizing)
+	// 		return nil
+	// 	})
+	// 	if err != nil {
+	// 		return fmt.Errorf("failed to get gateway sizingV1")
+	// 	}
+
+	// 	//os name of the gw is not stored in metadatas so we used ubuntu 16.04 by default
+	// 	sizing := resources.SizingRequirements{
+	// 		MinCores:    hostSizingV1.AllocatedSize.Cores,
+	// 		MaxCores:    hostSizingV1.AllocatedSize.Cores,
+	// 		MinFreq:     hostSizingV1.AllocatedSize.CPUFreq,
+	// 		MinGPU:      hostSizingV1.AllocatedSize.GPUNumber,
+	// 		MinRAMSize:  hostSizingV1.AllocatedSize.RAMSize,
+	// 		MaxRAMSize:  hostSizingV1.AllocatedSize.RAMSize,
+	// 		MinDiskSize: hostSizingV1.AllocatedSize.DiskSize,
+	// 	}
+	// 	networkBis, err := handler.Create(context.Background(), network.Name, network.CIDR, network.IPVersion, sizing, "Ubuntu 18.04", metadataHost.Name)
+	// 	if err != nil {
+	// 		return fmt.Errorf("failed to stop network deletion")
+	// 	}
+	// 	buf, err := networkBis.Serialize()
+	// 	if err != nil {
+	// 		return fmt.Errorf("deleted Network recreated by safescale")
+	// 	}
+	// 	return fmt.Errorf("deleted Network recreated by safescale : %s", buf)
+	// default:
+	// }
 
 	return nil
 }

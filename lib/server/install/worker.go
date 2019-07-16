@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
+	"github.com/CS-SI/SafeScale/lib/utils"
 
 	log "github.com/sirupsen/logrus"
 
@@ -118,14 +119,20 @@ func (w *worker) ConcernCluster() bool {
 
 // CanProceed tells if the combination Feature/Target can work
 func (w *worker) CanProceed(s Settings) error {
-	if w.cluster != nil {
-		err := w.validateContextForCluster()
-		if err == nil && !s.SkipSizingRequirements {
-			err = w.validateClusterSizing()
-		}
-		return err
+	switch w.target.Type() {
+	case "cluster":
+		// err := w.validateContextForCluster()
+		// if err == nil && !s.SkipSizingRequirements {
+		// 	err = w.validateClusterSizing()
+		// }
+		// return err
+		return nil
+	case "node":
+		return nil
+	case "host":
+		return w.validateContextForHost()
 	}
-	return w.validateContextForHost()
+	return nil
 }
 
 // identifyAvailableGateway finds a gateway available, and keep track of it
@@ -527,7 +534,7 @@ func (w *worker) Proceed(v Variables, s Settings) (Results, error) {
 			Serial:             serial,
 		}
 		results[k], err = step.Run(hostsList, w.variables, w.settings)
-		// If an error occured, don't do the remaining steps, fail immediately
+		// If an error occurred, don't do the remaining steps, fail immediately
 		if err != nil {
 			break
 		}
@@ -540,7 +547,7 @@ func (w *worker) Proceed(v Variables, s Settings) (Results, error) {
 
 // validateContextForCluster checks if the flavor of the cluster is listed in feature specification
 // 'feature.suitableFor.cluster'.
-// If no flavors is listed, no flavors are authorized (but using 'cluster: no' is strongly recommanded)
+// If no flavors is listed, no flavors are authorized (but using 'cluster: no' is strongly recommended)
 func (w *worker) validateContextForCluster() error {
 	clusterFlavor := w.cluster.GetIdentity(w.feature.task).Flavor
 
@@ -583,23 +590,38 @@ func (w *worker) validateClusterSizing() error {
 	if !w.feature.specs.IsSet(yamlKey) {
 		return nil
 	}
+
 	sizing := w.feature.specs.GetStringMap(yamlKey)
-	if anon, ok := sizing["minMasters"]; ok {
-		minMasters := anon.(int)
+	if anon, ok := sizing["masters"]; ok {
+		request := anon.(string)
+		count, _, _, err := w.parseClusterSizingRequest(request)
+		if err != nil {
+			return err
+		}
 		curMasters := len(w.cluster.ListMasterIDs(w.feature.task))
-		if curMasters < minMasters {
-			return fmt.Errorf("cluster doesn't meet the minimum number of masters (%d < %d)", curMasters, minMasters)
+		if curMasters < count {
+			return fmt.Errorf("cluster doesn't meet the minimum number of masters (%d < %d)", curMasters, count)
 		}
 	}
-	if anon, ok := sizing["minNodes"]; ok {
-		minNodes := anon.(int)
+	if anon, ok := sizing["nodes"]; ok {
+		request := anon.(string)
+		count, _, _, err := w.parseClusterSizingRequest(request)
+		if err != nil {
+			return err
+		}
 		curNodes := len(w.cluster.ListNodeIDs(w.feature.task))
-		if curNodes < minNodes {
-			return fmt.Errorf("cluster doesn't meet the minimum number of nodes (%d < %d)", curNodes, minNodes)
+		if curNodes < count {
+			return fmt.Errorf("cluster doesn't meet the minimum number of nodes (%d < %d)", curNodes, count)
 		}
 	}
 
 	return nil
+}
+
+// parseClusterSizingRequest returns count, cpu and ram components of request
+func (w *worker) parseClusterSizingRequest(request string) (int, int, float32, error) {
+
+	return 0, 0, 0.0, utils.NotImplementedError("parseClusterSizingRequest() not yet implemented")
 }
 
 // setReverseProxy applies the reverse proxy rules defined in specification file (if there are some)
@@ -617,7 +639,6 @@ func (w *worker) setReverseProxy() error {
 	gw, err = w.identifyAvailableGateway()
 	if err != nil {
 		return fmt.Errorf("failed to set reverse proxy: %s", err.Error())
-
 	}
 
 	kc, err := NewKongController(gw)

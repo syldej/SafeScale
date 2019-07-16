@@ -17,6 +17,8 @@
 package openstack
 
 import (
+	"fmt"
+
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/secgroups"
 	"github.com/sirupsen/logrus"
 
@@ -58,6 +60,7 @@ func (p *provider) Build(params map[string]interface{}) (providerapi.Provider, e
 	password, _ := identity["Password"].(string)
 	tenantName, _ := compute["TenantName"].(string)
 	region, _ := compute["Region"].(string)
+	zone, _ := compute["AvailabilityZone"].(string)
 	floatingIPPool, _ := network["FloatingIPPool"].(string)
 	providerNetwork, _ := network["ExternalNetwork"].(string)
 	if providerNetwork == "" {
@@ -83,6 +86,7 @@ func (p *provider) Build(params map[string]interface{}) (providerapi.Provider, e
 		Password:         password,
 		TenantName:       tenantName,
 		Region:           region,
+		AvailabilityZone: zone,
 		FloatingIPPool:   floatingIPPool,
 	}
 
@@ -116,11 +120,55 @@ func (p *provider) Build(params map[string]interface{}) (providerapi.Provider, e
 	if err != nil {
 		return nil, err
 	}
-	return newP, nil
+
+	validRegions, err := stack.ListRegions()
+	if err != nil {
+		if len(validRegions) != 0 {
+			return nil, err
+		}
+	}
+	if len(validRegions) != 0 {
+		regionIsValidInput := false
+		for _, vr := range validRegions {
+			if region == vr {
+				regionIsValidInput = true
+			}
+		}
+		if !regionIsValidInput {
+			return nil, fmt.Errorf("invalid Region: '%s'", region)
+		}
+	}
+
+	validAvailabilityZones, err := stack.ListAvailabilityZones()
+	if err != nil {
+		if len(validAvailabilityZones) != 0 {
+			return nil, err
+		}
+	}
+
+	if len(validAvailabilityZones) != 0 {
+		var validZones []string
+		zoneIsValidInput := false
+		for az, valid := range validAvailabilityZones {
+			if valid {
+				if az == zone {
+					zoneIsValidInput = true
+				}
+				validZones = append(validZones, az)
+			}
+		}
+		if !zoneIsValidInput {
+			return nil, fmt.Errorf("invalid Availability zone: '%s', valid zones are %v", zone, validZones)
+		}
+	}
+
+	// FIXME Time to try a new wrapper
+	valNewP := providerapi.NewValidatedProvider(newP, "ovh")
+	return valNewP, nil
 }
 
-// GetAuthOpts returns the auth options
-func (p *provider) GetAuthOpts() (providers.Config, error) {
+// GetAuthenticationOptions returns the auth options
+func (p *provider) GetAuthenticationOptions() (providers.Config, error) {
 
 	opts := p.Stack.GetAuthenticationOptions()
 	cfg := providers.ConfigMap{}
@@ -133,8 +181,8 @@ func (p *provider) GetAuthOpts() (providers.Config, error) {
 	return cfg, nil
 }
 
-// GetCfgOpts return configuration parameters
-func (p *provider) GetCfgOpts() (providers.Config, error) {
+// GetConfigurationOptions return configuration parameters
+func (p *provider) GetConfigurationOptions() (providers.Config, error) {
 	cfg := providers.ConfigMap{}
 
 	opts := p.Stack.GetConfigurationOptions()
@@ -152,7 +200,7 @@ func (p *provider) GetCfgOpts() (providers.Config, error) {
 // ListTemplates ...
 // Value of all has no impact on the result
 func (p *provider) ListTemplates(all bool) ([]resources.HostTemplate, error) {
-	allTemplates, err := p.Stack.ListTemplates(all)
+	allTemplates, err := p.Stack.ListTemplates()
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +210,7 @@ func (p *provider) ListTemplates(all bool) ([]resources.HostTemplate, error) {
 // ListImages ...
 // Value of all has no impact on the result
 func (p *provider) ListImages(all bool) ([]resources.Image, error) {
-	allImages, err := p.Stack.ListImages(all)
+	allImages, err := p.Stack.ListImages()
 	if err != nil {
 		return nil, err
 	}

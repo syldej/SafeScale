@@ -27,11 +27,11 @@ import (
 
 	uuid "github.com/satori/go.uuid"
 
-	"github.com/CS-SI/SafeScale/lib/server/metadata"
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/HostProperty"
 	propsv1 "github.com/CS-SI/SafeScale/lib/server/iaas/resources/properties/v1"
+	"github.com/CS-SI/SafeScale/lib/server/metadata"
 	"github.com/CS-SI/SafeScale/lib/system/nfs"
 	"github.com/CS-SI/SafeScale/lib/utils"
 )
@@ -53,11 +53,11 @@ type ShareAPI interface {
 
 // ShareHandler nas service
 type ShareHandler struct {
-	service *iaas.Service
+	service iaas.Service
 }
 
 // NewShareHandler creates a ShareHandler
-func NewShareHandler(svc *iaas.Service) ShareAPI {
+func NewShareHandler(svc iaas.Service) ShareAPI {
 	return &ShareHandler{
 		service: svc,
 	}
@@ -66,7 +66,7 @@ func NewShareHandler(svc *iaas.Service) ShareAPI {
 func sanitize(in string) (string, error) {
 	sanitized := path.Clean(in)
 	if !path.IsAbs(sanitized) {
-		return "", logicErr(fmt.Errorf("Exposed path must be absolute"))
+		return "", logicErr(fmt.Errorf("exposed path must be absolute"))
 	}
 	return sanitized, nil
 }
@@ -81,7 +81,7 @@ func (handler *ShareHandler) Create(
 	// Check if a share already exists with the same name
 	server, _, _, err := handler.Inspect(ctx, shareName)
 	if err != nil {
-		if _, ok := err.(resources.ErrResourceNotFound); !ok {
+		if !utils.IsNotFoundError(err) {
 			return nil, infraErr(err)
 		}
 	}
@@ -455,8 +455,7 @@ func (handler *ShareHandler) Mount(ctx context.Context, shareName, hostName, pat
 
 			nfsClient, err := nfs.NewNFSClient(sshConfig)
 			if err != nil {
-				err = infraErr(err)
-				log.Warn(err.Error())
+				log.Warn(infraErr(err).Error())
 			}
 			err = nfsClient.Install()
 			if err != nil {

@@ -16,56 +16,58 @@
 
 package handlers
 
-/*
-func TestNetworkHandler_List_with_safescaled_running(t *testing.T) {
-	mockCtrl := gomock.NewController(t)
-	defer mockCtrl.Finish()
+//FIXME: iaas.Service became an interface, so can't be used as before.
+//       Need to write a service struct satisfying iaas.Service interface
+//       and then initializes an instance of this service struct
+//
+// func TestNetworkHandler_List_with_safescaled_running(t *testing.T) {
+// 	mockCtrl := gomock.NewController(t)
+// 	defer mockCtrl.Finish()
 
-	mockClientAPI := mocks.NewMockProvider(mockCtrl)
+// 	mockClientAPI := mocks.NewMockProvider(mockCtrl)
 
-	ness := &NetworkHandler{
-		service: &iaas.Service{
-			Provider: mockClientAPI,
-		},
-	}
+// 	ness := &NetworkHandler{
+// 		service: iaas.Service{
+// 			Provider: mockClientAPI,
+// 		},
+// 	}
 
-	mockClientAPI.EXPECT().ListNetworks().Return(nil, nil).Times(1)
+// 	mockClientAPI.EXPECT().ListNetworks().Return(nil, nil).Times(1)
 
-	result, daerr := ness.service.ListNetworks()
+// 	result, daerr := ness.service.ListNetworks()
+// 	assert.Nil(t, daerr)
 
-	assert.Nil(t, daerr)
+// 	_ = result
+// }
 
-	_ = result
-}
+// func TestNetworkHandler_List_with_NO_safescaled_running(t *testing.T) {
+// 	mockCtrl := gomock.NewController(t)
+// 	defer mockCtrl.Finish()
 
-func TestNetworkHandler_List_with_NO_safescaled_running(t *testing.T) {
-	mockCtrl := gomock.NewController(t)
-	defer mockCtrl.Finish()
+// 	safescaledPort := 50051
 
-	safescaledPort := 50051
+// 	if portCandidate := os.Getenv("SAFESCALED_PORT"); portCandidate != "" {
+// 		num, err := strconv.Atoi(portCandidate)
+// 		if err == nil {
+// 			safescaledPort = num
+// 		}
+// 	}
 
-	if portCandidate := os.Getenv("SAFESCALED_PORT"); portCandidate != "" {
-		num, err := strconv.Atoi(portCandidate)
-		if err == nil {
-			safescaledPort = num
-		}
-	}
+// 	mockClientAPI := mocks.NewMockProvider(mockCtrl)
+// 	theError := fmt.Errorf("Could not get network list: rpc error: code = Unavailable desc = all SubConns are in TransientFailure, latest connection error: connection error: desc = \"transport: Error while dialing dial tcp 127.0.0.1:%s: connect: connection refused\"", strconv.Itoa(safescaledPort))
 
-	mockClientAPI := mocks.NewMockProvider(mockCtrl)
-	theError := fmt.Errorf("Could not get network list: rpc error: code = Unavailable desc = all SubConns are in TransientFailure, latest connection error: connection error: desc = \"transport: Error while dialing dial tcp 127.0.0.1:%s: connect: connection refused\"", strconv.Itoa(safescaledPort))
+// 	ness := &NetworkHandler{
+// 		service: iaas.Service{
+// 			Provider: mockClientAPI,
+// 		},
+// 	}
 
-	ness := &NetworkHandler{
-		service: &iaas.Service{
-			Provider: mockClientAPI,
-		},
-	}
+// 	mockClientAPI.EXPECT().ListNetworks().Return(nil, theError).Times(1)
 
-	mockClientAPI.EXPECT().ListNetworks().Return(nil, theError).Times(1)
+// 	result, daerr := ness.service.ListNetworks()
+// 	assert.NotNil(t, daerr)
 
-	result, daerr := ness.service.ListNetworks()
+// 	assert.True(t, strings.Contains(daerr.Error(), "TransientFailure"))
 
-	assert.EqualError(t, daerr, "Failure")
-
-	assert.Nil(t, result)
-}
-*/
+// 	assert.Nil(t, result)
+// }

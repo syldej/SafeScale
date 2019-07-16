@@ -137,7 +137,7 @@ func ListFeatures(suitableFor string) ([]interface{}, error) {
 				}
 			}
 		default:
-			return nil, fmt.Errorf("Unknown parameter value : %s \n (should be host or cluster)", suitableFor)
+			return nil, fmt.Errorf("unknown parameter value : %s \n (should be host or cluster)", suitableFor)
 		}
 
 	}
@@ -185,6 +185,26 @@ func NewFeature(task concurrency.Task, name string) (*Feature, error) {
 				task:        task,
 			}
 		}
+	}
+	return &feat, err
+}
+
+// NewEmbeddedFeature searches for an embedded featured named 'name' and initializes a new Feature object
+// with its content
+func NewEmbeddedFeature(task concurrency.Task, name string) (*Feature, error) {
+	if name == "" {
+		panic("name is empty!")
+	}
+
+	var (
+		feat Feature
+		err  error
+	)
+	if _, ok := allEmbeddedMap[name]; !ok {
+		err = fmt.Errorf("failed to find a feature named '%s'", name)
+	} else {
+		feat = *allEmbeddedMap[name]
+		feat.task = task
 	}
 	return &feat, err
 }
@@ -464,6 +484,11 @@ func (f *Feature) setImplicitParameters(t Target, v Variables) {
 		if hT != nil {
 			host = hT.host
 		}
+
+		if host == nil {
+			panic("nil host in feature")
+		}
+
 		v["Hostname"] = host.Name
 		v["HostIP"] = host.PrivateIp
 		gw := gatewayFromHost(host)

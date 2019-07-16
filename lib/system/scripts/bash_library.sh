@@ -35,14 +35,15 @@ export -f sfWaitForApt
 # sfApt does exactly what apt does, but we call sfWaitForApt first
 sfApt() {
 	sfWaitForApt
-	apt $@
+	DEBIAN_FRONTEND=noninteractive apt "$@"
 }
+export -f sfApt
 
 sfWaitLockfile() {
 	local ROUNDS=600
 	name=$1
 	shift
-	params=$@
+	params="$@"
 	echo "check $name lock"
 	echo ${params}
 	if fuser ${params} &>/dev/null; then
@@ -195,7 +196,8 @@ export -f sfRetry
 sfFirewall() {
 	[ $# -eq 0 ] && return 0
 	which firewall-cmd &>/dev/null || return 1
-	firewall-cmd "$@"
+	# sudo may be superfluous if executed as root, but won't harm
+	sudo firewall-cmd "$@"
 }
 export -f sfFirewall
 
@@ -209,7 +211,8 @@ export -f sfFirewallAdd
 # sfFirewallReload reloads firewall rules
 sfFirewallReload() {
 	which firewall-cmd &>/dev/null || return 1
-	firewall-cmd --reload
+	# sudo may be superfluous if executed as root, but won't harm
+	sudo firewall-cmd --reload
 }
 export -f sfFirewallReload
 
@@ -218,8 +221,8 @@ sfInstall() {
 	case $LINUX_KIND in
 		debian|ubuntu)
 			export DEBIAN_FRONTEND=noninteractive
-			sfRetry 5m 3 "sfWaitForApt && apt-get update"
-			apt-get install $1 -y || exit 194
+			sfRetry 5m 3 "sfApt update"
+			sfApt install $1 -y || exit 194
 			which $1 || exit 194
 			;;
 		centos|rhel)
@@ -277,7 +280,7 @@ __create_dropzone() {
 
 sfDownloadInDropzone() {
 	__create_dropzone &>/dev/null
-	( cd ~cladm/.dropzone && sfDownload $@)
+	( cd ~cladm/.dropzone && sfDownload "$@")
 }
 export -f sfDownloadInDropzone
 
@@ -305,7 +308,7 @@ sfDropzonePop() {
 	local file="$2"
 	__create_dropzone &>/dev/null
 	mkdir -p "$dest" &>/dev/null
-	if [ $# -eq 1 ]; then 
+	if [ $# -eq 1 ]; then
 		mv -f ~cladm/.dropzone/* "$dest"
 	else
 		mv -f ~cladm/.dropzone/"$file" "$dest"
@@ -336,29 +339,29 @@ sfRemoteExec() {
 export -f sfRemoteExec
 
 sfKubectl() {
-	sudo -u cladm -i kubectl $@
+	sudo -u cladm -i kubectl "$@"
 }
 export -f sfKubectl
 
 sfDcos() {
-	sudo -u cladm -i dcos $@
+	sudo -u cladm -i dcos "$@"
 }
 export -f sfDcos
 
 sfMarathon() {
-	sudo -u cladm -i marathon $@
+	sudo -u cladm -i marathon "$@"
 }
 export -f sfMarathon
 
 sfProbeGPU() {
 	if which lspci &>/dev/null; then
 		val=$(lspci | grep nvidia 2>/dev/null)
-		[ ! -z $val ] && FACTS["nVidia GPU"]=$val
+		[ ! -z "$val" ] && FACTS["nVidia GPU"]=$val || true
 	fi
 }
 
 sfReverseProxyReload() {
-	id=$(docker ps --filter "name=reverseproxy_proxy_1" {{ "--format '{{.ID}}'" }})
+	id=$(docker ps --filter "name=kong4gateway_proxy_1" {{ "--format '{{.ID}}'" }})
 	[ ! -z "$id" ] && docker exec $id kong reload >/dev/null
 }
 export -f sfReverseProxyReload
@@ -368,7 +371,7 @@ sfService() {
 	[ $# -ne 2 ] && return 1
 
 	# Preventively run daemon-reload in case of changes
-	[ "$(sfGetFact 'use systemd')" = "1"] && systemctl daemon-reload
+	[ "$(sfGetFact 'use systemd')" = "1" ] && systemctl daemon-reload
 
 	case $1 in
 		enable)
@@ -396,22 +399,70 @@ sfService() {
 			[ "$(sfGetFact 'use systemd')" = "1" ] && service $2 reload && return $?
 			;;
 		*)
-			echo "sfService(): unhandle command '$1'"
+			echo "sfService(): unhandled command '$1'"
 			;;
 	esac
 	return 1
 }
+export -f sfService
 
+# tells if a container using a specific image (and optionnaly name) is running in standalone mode
+sfDoesDockerRun() {
+	[ $# -eq 0 ] && return 1
+	local IMAGE=$1
+	shift
+	local NAME=
+	[ $# -ge 1 ] && NAME=$1
+
+	local LIST=$(docker container ls {{ "--format '{{.Image}}|{{.Names}}|{{.Status}}'" }})
+	[ -z "$LIST" ] && return 1
+	[ "$IMAGE" != "$(echo "$LIST" | cut -d'|' -f1 | grep "$IMAGE" | uniq)" ] && return 1
+	[ ! -z "$NAME" -a "$NAME" != "$(echo "$LIST" | cut -d'|' -f2 | grep "$NAME" | uniq)" ] && return 1
+	echo $LIST | cut -d'|' -f3 | grep -i "^up" &>/dev/null || return 1
+	return 0
+}
+export -f sfDoesDockerRun
+
+# tells if a container using a specific image (and optionally name) is running in Swarm mode
+sfDoesDockerSwarmRun() {
+	[ $# -eq 0 ] && return 1
+	local IMAGE=$1
+	shift
+	local NAME=$1
+
+	local LIST=$(docker service ps $NAME {{ "--format '{{.Image}}|{{.Name}}|{{.CurrentState}}'" }})
+	if [ -z "$LIST" ]; then
+		return 1
+	fi
+	local RIMAGE=$(echo "$LIST" | cut -d'|' -f1)
+	if [ "$IMAGE" != "$RIMAGE" ]; then
+		return 1
+	fi
+	if [ ! -z "$NAME" ]; then
+		local RNAME=$(echo "$LIST" | cut -d'|' -f2)
+		if ! expr match "$RNAME" "^${NAME}\." &>/dev/null; then
+			return 1
+		fi
+	fi
+	if ! echo $LIST | cut -d'|' -f3 | grep -i "^running" >/dev/null; then
+		return 1
+	fi
+	return 0
+}
+export -f sfDoesDockerSwarmRun
+
+# Removes unnamed images (prune removes also not running images, not )
 # echoes a random string
 # $1 is the size of the result (optional)
 # $2 is the characters to choose from (optional); use preferably [:xxx:] notation (like [:alnum:] for all letters and digits)
 sfRandomString() {
 	local count=16
 	[ $# -ge 1 ] && count=$1
-	local characters="[:graph:]"
-	[ $# -ge 2 ] && characters="$2"
-	</dev/urandom tr -dc "$characters" | head -c${count}
+	local charset="[:graph:]"
+	[ $# -ge 2 ] && charset="$2"
+	</dev/urandom tr -dc "$charset" | head -c${count}
 }
+export -f sfRandomString
 
 declare -A FACTS
 LINUX_KIND=
@@ -432,7 +483,7 @@ sfDetectFacts() {
 			else
 					[ -f /etc/redhat-release ] && {
 							LINUX_KIND=$(cat /etc/redhat-release | cut -d' ' -f1)
-							LINUX_KID=${LINUX_KIND,,}
+							LINUX_KIND=${LINUX_KIND,,}
 							VERSION_ID=$(cat /etc/redhat-release | cut -d' ' -f3 | cut -d. -f1)
 					}
 			fi
@@ -451,7 +502,11 @@ sfDetectFacts() {
 			FACTS["debian like"]=1
 			;;
 	esac
-	[[ $(systemctl) =~ -\.mount ]] && FACTS["use systemd"]=1 || FACTS["use systemd"]=0
+	if systemctl | grep '\-.mount' &>/dev/null; then
+		FACTS["use systemd"]=1
+	else
+		FACTS["use systemd"]=0
+	fi
 
 	# Some facts about hardware
 	val=$(LANG=C lscpu | grep "Socket(s)" | cut -d: -f2 | sed 's/"//g')

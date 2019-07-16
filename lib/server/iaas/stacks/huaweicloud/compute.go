@@ -215,16 +215,16 @@ func (opts serverCreateOpts) ToServerCreateMap() (map[string]interface{}, error)
 
 	if len(opts.Networks) > 0 {
 		networks := make([]map[string]interface{}, len(opts.Networks))
-		for i, net := range opts.Networks {
+		for i, network := range opts.Networks {
 			networks[i] = make(map[string]interface{})
-			if net.UUID != "" {
-				networks[i]["uuid"] = net.UUID
+			if network.UUID != "" {
+				networks[i]["uuid"] = network.UUID
 			}
-			if net.Port != "" {
-				networks[i]["port"] = net.Port
+			if network.Port != "" {
+				networks[i]["port"] = network.Port
 			}
-			if net.FixedIP != "" {
-				networks[i]["fixed_ip"] = net.FixedIP
+			if network.FixedIP != "" {
+				networks[i]["fixed_ip"] = network.FixedIP
 			}
 		}
 		b["networks"] = networks
@@ -334,22 +334,23 @@ func (s *Stack) CreateHost(request resources.HostRequest) (*resources.Host, *use
 	// Determine system disk size based on vcpus count
 	template, err := s.GetTemplate(request.TemplateID)
 	if err != nil {
-		return nil, userData, fmt.Errorf("Failed to get image: %s", openstack.ProviderErrorToString(err))
+		return nil, userData, fmt.Errorf("failed to get image: %s", openstack.ProviderErrorToString(err))
 	}
 
 	// Determines appropriate disk size
-	var diskSize int
-	if template.DiskSize > 0 {
-		diskSize = template.DiskSize
-	} else if template.Cores < 16 {
-		diskSize = 100
-	} else if template.Cores < 32 {
-		diskSize = 200
-	} else {
-		diskSize = 400
+	if request.DiskSize > template.DiskSize {
+		template.DiskSize = request.DiskSize
+	} else if template.DiskSize == 0 {
+		if template.Cores < 16 {
+			template.DiskSize = 100
+		} else if template.Cores < 32 {
+			template.DiskSize = 200
+		} else {
+			template.DiskSize = 400
+		}
 	}
 
-	// Select useable availability zone
+	// Select usable availability zone
 	az, err := s.SelectedAvailabilityZone()
 	if err != nil {
 		return nil, userData, err
@@ -363,7 +364,7 @@ func (s *Stack) CreateHost(request resources.HostRequest) (*resources.Host, *use
 		DeleteOnTermination: true,
 		UUID:                request.ImageID,
 		VolumeType:          "SSD",
-		VolumeSize:          diskSize,
+		VolumeSize:          template.DiskSize,
 	}
 	// Defines server
 	userDataPhase1, err := userData.Generate("phase1")
@@ -407,7 +408,7 @@ func (s *Stack) CreateHost(request resources.HostRequest) (*resources.Host, *use
 	}
 
 	// Adds Host property SizingV1
-	template.DiskSize = diskSize // Makes sure the size of disk is correctly saved
+	// template.DiskSize = diskSize // Makes sure the size of disk is correctly saved
 	err = host.Properties.LockForWrite(HostProperty.SizingV1).ThenUse(func(v interface{}) error {
 		hostSizingV1 := v.(*propsv1.HostSizing)
 		// Note: from there, no idea what was the RequestedSize; caller will have to complement this information
@@ -474,7 +475,7 @@ func (s *Stack) CreateHost(request resources.HostRequest) (*resources.Host, *use
 		if err != nil {
 			derr := s.DeleteHost(host.ID)
 			if derr != nil {
-				log.Errorf("Failed to delete host '%s': %v", host.Name, derr)
+				log.Errorf("failed to delete host '%s': %v", host.Name, derr)
 			}
 		}
 	}()
@@ -492,7 +493,7 @@ func (s *Stack) CreateHost(request resources.HostRequest) (*resources.Host, *use
 			if err != nil {
 				derr := s.DeleteFloatingIP(fip.ID)
 				if derr != nil {
-					log.Errorf("Error deleting Floating IP: %v", derr)
+					log.Errorf("error deleting Floating IP: %v", derr)
 				}
 			}
 		}()
@@ -536,9 +537,9 @@ func validatehostName(req resources.HostRequest) (bool, error) {
 
 	e := s.Validate(req)
 	if e.HasErrors() {
-		errors, _ := e.GetErrorsByKey("ResourceName")
+		errorList, _ := e.GetErrorsByKey("ResourceName")
 		var errs []string
-		for _, msg := range errors {
+		for _, msg := range errorList {
 			errs = append(errs, msg.Error())
 		}
 		return false, fmt.Errorf(strings.Join(errs, " + "))
@@ -614,6 +615,11 @@ func (s *Stack) InspectHost(hostParam interface{}) (*resources.Host, error) {
 		return nil, resources.ResourceNotFoundError("host", host.ID)
 	}
 	err = s.complementHost(host, server)
+
+	if !host.OK() {
+		log.Debugf("[TRACE] Unexpected host status: %s", spew.Sdump(host))
+	}
+
 	return host, err
 }
 
@@ -705,13 +711,13 @@ func (s *Stack) complementHost(host *resources.Host, server *servers.Server) err
 		// Updates network name and relationships if needed
 		for netid, netname := range hostNetworkV1.NetworksByID {
 			if netname == "" {
-				net, err := s.GetNetwork(netid)
+				network, err := s.GetNetwork(netid)
 				if err != nil {
 					log.Errorf("failed to get network '%s'", netid)
 					continue
 				}
-				hostNetworkV1.NetworksByID[netid] = net.Name
-				hostNetworkV1.NetworksByName[net.Name] = netid
+				hostNetworkV1.NetworksByID[netid] = network.Name
+				hostNetworkV1.NetworksByName[network.Name] = netid
 			}
 		}
 		return nil
@@ -907,7 +913,7 @@ func (s *Stack) getFloatingIPOfHost(hostID string) (*floatingips.FloatingIP, err
 
 	}
 	if len(fips) > 1 {
-		return nil, fmt.Errorf("Configuration error, more than one Floating IP associated to host '%s'", hostID)
+		return nil, fmt.Errorf("configuration error, more than one Floating IP associated to host '%s'", hostID)
 	}
 	return &fips[0], nil
 }
@@ -923,7 +929,7 @@ func (s *Stack) attachFloatingIP(host *resources.Host) (*FloatingIP, error) {
 	if err != nil {
 		derr := s.DeleteFloatingIP(fip.ID)
 		if derr != nil {
-			log.Warnf("Error deleting floating ip: %v", derr)
+			log.Warnf("error deleting floating ip: %v", derr)
 		}
 		return nil, fmt.Errorf("failed to attach Floating IP to host '%s': %s", host.Name, openstack.ProviderErrorToString(err))
 	}
@@ -963,7 +969,7 @@ func (s *Stack) enableHostRouterMode(host *resources.Host) error {
 	opts := ports.UpdateOpts{AllowedAddressPairs: &pairs}
 	_, err = ports.Update(s.Stack.NetworkClient, *portID, opts).Extract()
 	if err != nil {
-		return fmt.Errorf("Failed to enable Router Mode on host '%s': %s", host.Name, openstack.ProviderErrorToString(err))
+		return fmt.Errorf("failed to enable Router Mode on host '%s': %s", host.Name, openstack.ProviderErrorToString(err))
 	}
 	return nil
 }
@@ -972,16 +978,16 @@ func (s *Stack) enableHostRouterMode(host *resources.Host) error {
 func (s *Stack) disableHostRouterMode(host *resources.Host) error {
 	portID, err := s.getOpenstackPortID(host)
 	if err != nil {
-		return fmt.Errorf("Failed to disable Router Mode on host '%s': %s", host.Name, openstack.ProviderErrorToString(err))
+		return fmt.Errorf("failed to disable Router Mode on host '%s': %s", host.Name, openstack.ProviderErrorToString(err))
 	}
 	if portID == nil {
-		return fmt.Errorf("Failed to disable Router Mode on host '%s': failed to find OpenStack port", host.Name)
+		return fmt.Errorf("failed to disable Router Mode on host '%s': failed to find OpenStack port", host.Name)
 	}
 
 	opts := ports.UpdateOpts{AllowedAddressPairs: nil}
 	_, err = ports.Update(s.Stack.NetworkClient, *portID, opts).Extract()
 	if err != nil {
-		return fmt.Errorf("Failed to disable Router Mode on host '%s': %s", host.Name, openstack.ProviderErrorToString(err))
+		return fmt.Errorf("failed to disable Router Mode on host '%s': %s", host.Name, openstack.ProviderErrorToString(err))
 	}
 	return nil
 }

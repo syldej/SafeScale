@@ -33,7 +33,7 @@ const (
 	MPICHCompile
 	MPICHInstall
 
-	//NextErrorCode is the next error code useable
+	//NextErrorCode is the next error code usable
 	NextErrorCode
 )
 

@@ -12,21 +12,20 @@ const (
 	HostTimeout = 5 * time.Minute
 
 	// Long timeout
-	LongHostOperationTimeout    = 10 * time.Minute
+	LongHostOperationTimeout = 10 * time.Minute
 
 	DefaultSSHConnectionTimeout = 2 * time.Minute
-	HostCleanupTimeout = 3 * time.Minute
+	HostCleanupTimeout          = 3 * time.Minute
 
 	DefaultConnectionTimeout = 30 * time.Second
 	DefaultExecutionTimeout  = 5 * time.Minute
 
-
-	SmallDelay = 1*time.Second
-	DefaultDelay = 5*time.Second
-	BigDelay = 30*time.Second
+	SmallDelay   = 1 * time.Second
+	DefaultDelay = 5 * time.Second
+	BigDelay     = 30 * time.Second
 )
 
-func GetVariableTimeout(key string, duration time.Duration) time.Duration {
+func GetTimeoutFromEnv(key string, duration time.Duration) time.Duration {
 	defaultTimeout := duration
 
 	if defaultTimeoutCandidate := os.Getenv(key); defaultTimeoutCandidate != "" {
@@ -41,36 +40,36 @@ func GetVariableTimeout(key string, duration time.Duration) time.Duration {
 }
 
 func GetMinDelay() time.Duration {
-	return GetVariableTimeout("SAFESCALE_MIN_DELAY", SmallDelay)
+	return GetTimeoutFromEnv("SAFESCALE_MIN_DELAY", SmallDelay)
 }
 
 func GetDefaultDelay() time.Duration {
-	return GetVariableTimeout("SAFESCALE_DEFAULT_DELAY", DefaultDelay)
+	return GetTimeoutFromEnv("SAFESCALE_DEFAULT_DELAY", DefaultDelay)
 }
 
 func GetBigDelay() time.Duration {
-	return GetVariableTimeout("SAFESCALE_BIG_DELAY", BigDelay)
+	return GetTimeoutFromEnv("SAFESCALE_BIG_DELAY", BigDelay)
 }
 
 // GetContextTimeout ...
 func GetContextTimeout() time.Duration {
-	return GetVariableTimeout("SAFESCALE_CONTEXT_TIMEOUT", DefaultContextTimeout)
+	return GetTimeoutFromEnv("SAFESCALE_CONTEXT_TIMEOUT", DefaultContextTimeout)
 }
 
 // GetHostTimeout ...
 func GetHostTimeout() time.Duration {
-	return GetVariableTimeout("SAFESCALE_HOST_TIMEOUT", HostTimeout)
+	return GetTimeoutFromEnv("SAFESCALE_HOST_TIMEOUT", HostTimeout)
 }
 
 func GetHostCleanupTimeout() time.Duration {
-	return GetVariableTimeout("SAFESCALE_HOST_CLEANUP_TIMEOUT", HostCleanupTimeout)
+	return GetTimeoutFromEnv("SAFESCALE_HOST_CLEANUP_TIMEOUT", HostCleanupTimeout)
 }
 
 func GetConnectSSHTimeout() time.Duration {
-	return GetVariableTimeout("SAFESCALE_SSH_CONNECT_TIMEOUT", DefaultSSHConnectionTimeout)
+	return GetTimeoutFromEnv("SAFESCALE_SSH_CONNECT_TIMEOUT", DefaultSSHConnectionTimeout)
 }
 
 // GetHostTimeout ...
 func GetLongOperationTimeout() time.Duration {
-	return GetVariableTimeout("SAFESCALE_HOST_LONG_OPERATION_TIMEOUT", LongHostOperationTimeout)
+	return GetTimeoutFromEnv("SAFESCALE_HOST_LONG_OPERATION_TIMEOUT", LongHostOperationTimeout)
 }

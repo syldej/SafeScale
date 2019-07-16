@@ -19,7 +19,7 @@ package listeners
 import (
 	"context"
 
-	google_protobuf "github.com/golang/protobuf/ptypes/empty"
+	protobuf "github.com/golang/protobuf/ptypes/empty"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -37,7 +37,7 @@ var DataHandler = handlers.NewDataHandler
 type DataListener struct{}
 
 // List will returns all the files from one or several ObjectStorages
-func (s *DataListener) List(ctx context.Context, in *google_protobuf.Empty) (*pb.FileList, error) {
+func (s *DataListener) List(ctx context.Context, in *protobuf.Empty) (*pb.FileList, error) {
 	log.Infof("safescaled receiving 'data list'")
 	log.Debugf(">>> listeners.DataListener::List()")
 	defer log.Debugf("<<< listeners.DataListener::List()")
@@ -64,7 +64,7 @@ func (s *DataListener) List(ctx context.Context, in *google_protobuf.Empty) (*pb
 }
 
 // Push upload a file to one or several ObjectStorages
-func (s *DataListener) Push(ctx context.Context, in *pb.File) (*google_protobuf.Empty, error) {
+func (s *DataListener) Push(ctx context.Context, in *pb.File) (*protobuf.Empty, error) {
 	log.Infof("safescaled receiving 'data push %s'", in.GetLocalPath())
 	log.Debugf(">>> listeners.DataListener::Push(%s)", in.GetLocalPath())
 	defer log.Debugf("<<< listeners.DataListener::Push(%s)", in.GetLocalPath())
@@ -87,11 +87,11 @@ func (s *DataListener) Push(ctx context.Context, in *pb.File) (*google_protobuf.
 		return nil, grpc.Errorf(codes.Internal, err.Error())
 	}
 
-	return &google_protobuf.Empty{}, nil
+	return &protobuf.Empty{}, nil
 }
 
 // Get fetch a file from one or several ObjectStorages
-func (s *DataListener) Get(ctx context.Context, in *pb.File) (*google_protobuf.Empty, error) {
+func (s *DataListener) Get(ctx context.Context, in *pb.File) (*protobuf.Empty, error) {
 	log.Infof("safescaled receiving 'data get %s'", in.GetName())
 	log.Debugf(">>> listeners.DataListener::Get(%s)", in.GetName())
 	defer log.Debugf("<<< listeners.DataListener::Get(%s)", in.GetName())
@@ -114,11 +114,11 @@ func (s *DataListener) Get(ctx context.Context, in *pb.File) (*google_protobuf.E
 		return nil, grpc.Errorf(codes.Internal, err.Error())
 	}
 
-	return &google_protobuf.Empty{}, nil
+	return &protobuf.Empty{}, nil
 }
 
-// Dlete remove a file from one or several ObjectStorages
-func (s *DataListener) Delete(ctx context.Context, in *pb.File) (*google_protobuf.Empty, error) {
+// Delete remove a file from one or several ObjectStorages
+func (s *DataListener) Delete(ctx context.Context, in *pb.File) (*protobuf.Empty, error) {
 	log.Infof("safescaled receiving 'data delete %s'", in.GetName())
 	log.Debugf(">>> listeners.DataListener::Delete(%s)", in.GetName())
 	defer log.Debugf("<<< listeners.DataListener::Delete(%s)", in.GetName())
@@ -141,5 +141,5 @@ func (s *DataListener) Delete(ctx context.Context, in *pb.File) (*google_protobu
 		return nil, grpc.Errorf(codes.Internal, err.Error())
 	}
 
-	return &google_protobuf.Empty{}, nil
+	return &protobuf.Empty{}, nil
 }

@@ -46,6 +46,15 @@ func NewVolume() *Volume {
 	}
 }
 
+func (v *Volume) OK() bool {
+	result := true
+	result = result && v.ID != ""
+	result = result && v.Name != ""
+	result = result && v.Size != 0
+	result = result && v.Properties != nil
+	return result
+}
+
 // Serialize serializes Host instance into bytes (output json code)
 func (v *Volume) Serialize() ([]byte, error) {
 	return serialize.ToJSON(v)
@@ -82,4 +91,18 @@ type VolumeAttachment struct {
 	Device     string `json:"device,omitempty"`
 	MountPoint string `json:"mountpoint,omitempty"`
 	Format     string `json:"format,omitempty"`
+}
+
+func (v VolumeAttachment) OK() bool {
+	value := true
+	// FIXME Implement this later using validator framework
+	value = value && v.ID != ""
+	value = value && v.Name != ""
+	value = value && v.VolumeID != ""
+	value = value && v.ServerID != ""
+	value = value && v.Device != ""
+	value = value && v.MountPoint != ""
+	value = value && v.Format != ""
+
+	return value
 }

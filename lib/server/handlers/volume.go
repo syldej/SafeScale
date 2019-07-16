@@ -19,10 +19,11 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"strings"
+
 	mapset "github.com/deckarep/golang-set"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
-	"strings"
 
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
@@ -50,11 +51,11 @@ type VolumeAPI interface {
 
 // VolumeHandler volume service
 type VolumeHandler struct {
-	service *iaas.Service
+	service iaas.Service
 }
 
 // NewVolumeHandler creates a Volume service
-func NewVolumeHandler(svc *iaas.Service) VolumeAPI {
+func NewVolumeHandler(svc iaas.Service) VolumeAPI {
 	return &VolumeHandler{
 		service: svc,
 	}
@@ -113,7 +114,7 @@ func (handler *VolumeHandler) Delete(ctx context.Context, ref string) error {
 
 	err = handler.service.DeleteVolume(volume.ID)
 	if err != nil {
-		if _, ok := err.(resources.ErrResourceNotFound); !ok {
+		if !utils.IsNotFoundError(err) {
 			return infraErrf(err, "can't delete volume")
 		}
 		log.Warnf("Unable to find the volume on provider side, cleaning up metadata")
@@ -249,7 +250,7 @@ func (handler *VolumeHandler) Attach(ctx context.Context, volumeName, hostName, 
 	// Get volume data
 	volume, _, err := handler.Inspect(ctx, volumeName)
 	if err != nil {
-		if _, ok := err.(resources.ErrResourceNotFound); ok {
+		if utils.IsNotFoundError(err) {
 			return err
 		}
 		return infraErr(err)
@@ -546,7 +547,7 @@ func (handler *VolumeHandler) Detach(ctx context.Context, volumeName, hostName s
 	// Load volume data
 	volume, _, err := handler.Inspect(ctx, volumeName)
 	if err != nil {
-		if _, ok := err.(resources.ErrResourceNotFound); !ok {
+		if !utils.IsNotFoundError(err) {
 			return infraErr(err)
 		}
 		return infraErr(resources.ResourceNotFoundError("volume", volumeName))
@@ -567,7 +568,7 @@ func (handler *VolumeHandler) Detach(ctx context.Context, volumeName, hostName s
 		// Check the volume is effectively attached
 		attachment, found := hostVolumesV1.VolumesByID[volume.ID]
 		if !found {
-			return logicErr(fmt.Errorf("Can't detach volume '%s': not attached to host '%s'", volumeName, host.Name))
+			return logicErr(fmt.Errorf("can't detach volume '%s': not attached to host '%s'", volumeName, host.Name))
 		}
 
 		// Obtain mounts information

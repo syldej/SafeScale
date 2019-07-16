@@ -48,7 +48,7 @@ import (
 
 // HostAPI defines API to manipulate hosts
 type HostAPI interface {
-	Create(ctx context.Context, name string, net string, cpu int, ram float32, disk int, os string, public bool, gpuNumber int, freq float32, force bool) (*resources.Host, error)
+	Create(ctx context.Context, name string, net string, os string, public bool, sizing *resources.SizingRequirements, force bool) (*resources.Host, error)
 	List(ctx context.Context, all bool) ([]*resources.Host, error)
 	ForceInspect(ctx context.Context, ref string) (*resources.Host, error)
 	Inspect(ctx context.Context, ref string) (*resources.Host, error)
@@ -62,11 +62,11 @@ type HostAPI interface {
 
 // HostHandler host service
 type HostHandler struct {
-	service *iaas.Service
+	service iaas.Service
 }
 
 // NewHostHandler ...
-func NewHostHandler(svc *iaas.Service) HostAPI {
+func NewHostHandler(svc iaas.Service) HostAPI {
 	return &HostHandler{
 		service: svc,
 	}
@@ -74,8 +74,8 @@ func NewHostHandler(svc *iaas.Service) HostAPI {
 
 // Start starts a host
 func (handler *HostHandler) Start(ctx context.Context, ref string) error {
-	log.Debugf(">>> safescale.server.handlers.HostHandler::Start(%s)", ref)
-	defer log.Debugf("<<< safescale.server.handlers.HostHandler::Start(%s)", ref)
+	log.Debugf(">>> lib.server.handlers.HostHandler::Start(%s)", ref)
+	defer log.Debugf("<<< lib.server.handlers.HostHandler::Start(%s)", ref)
 
 	mh, err := metadata.LoadHost(handler.service, ref)
 	if err != nil {
@@ -95,8 +95,8 @@ func (handler *HostHandler) Start(ctx context.Context, ref string) error {
 
 // Stop stops a host
 func (handler *HostHandler) Stop(ctx context.Context, ref string) error {
-	log.Debugf(">>> safescale.server.handlers.HostHandler::Stop(%s)", ref)
-	defer log.Debugf("<<< safescale.server.handlers.HostHandler::Stop(%s)", ref)
+	log.Debugf(">>> lib.server.handlers.HostHandler::Stop(%s)", ref)
+	defer log.Debugf("<<< lib.server.handlers.HostHandler::Stop(%s)", ref)
 
 	mh, err := metadata.LoadHost(handler.service, ref)
 	if err != nil {
@@ -116,8 +116,8 @@ func (handler *HostHandler) Stop(ctx context.Context, ref string) error {
 
 // Reboot reboots a host
 func (handler *HostHandler) Reboot(ctx context.Context, ref string) error {
-	log.Debugf(">>> safescale.server.handlers.HostHandler::Reboot(%s)", ref)
-	defer log.Debugf("<<< safescale.server.handlers.HostHandler::Reboot(%s)", ref)
+	log.Debugf(">>> lib.server.handlers.HostHandler::Reboot(%s)", ref)
+	defer log.Debugf("<<< lib.server.handlers.HostHandler::Reboot(%s)", ref)
 
 	mh, err := metadata.LoadHost(handler.service, ref)
 	if err != nil {
@@ -145,8 +145,8 @@ func (handler *HostHandler) Reboot(ctx context.Context, ref string) error {
 
 // Resize ...
 func (handler *HostHandler) Resize(ctx context.Context, ref string, cpu int, ram float32, disk int, gpuNumber int, freq float32) (*resources.Host, error) {
-	log.Debugf(">>> safescale.server.handlers.HostHandler::Resize(%s)", ref)
-	defer log.Debugf("<<< safescale.server.handlers.HostHandler::Resize(%s)", ref)
+	log.Debugf(">>> lib.server.handlers.HostHandler::Resize(%s)", ref)
+	defer log.Debugf("<<< lib.server.handlers.HostHandler::Resize(%s)", ref)
 
 	mh, err := metadata.LoadHost(handler.service, ref)
 	if err != nil {
@@ -204,18 +204,21 @@ func (handler *HostHandler) Resize(ctx context.Context, ref string, cpu int, ram
 }
 
 // Create creates a host
+// func (handler *HostHandler) Create(
+// 	ctx context.Context,
+// 	name string, net string, cpu int, ram float32, disk int, los string, public bool, gpuNumber int, freq float32,
+// 	force bool,
 func (handler *HostHandler) Create(
 	ctx context.Context,
-	name string, net string, cpu int, ram float32, disk int, los string, public bool, gpuNumber int, freq float32,
-	force bool,
+	name string, net string, los string, public bool, sizing *resources.SizingRequirements, force bool,
 ) (*resources.Host, error) {
 
-	log.Debugf(">>> safescale.server.handlers.HostHandler::Create(%s)", name)
-	defer log.Debugf("<<< safescale.server.handlers.HostHandler::Create(%s)", name)
+	log.Debugf(">>> lib.server.handlers.HostHandler::Create(%s)", name)
+	defer log.Debugf("<<< lib.server.handlers.HostHandler::Create(%s)", name)
 
 	host, err := handler.service.GetHostByName(name)
 	if err != nil {
-		if _, ok := err.(resources.ErrResourceNotFound); !ok {
+		if !utils.IsNotFoundError(err) {
 			return nil, infraErrf(err, "failure creating host: failed to check if host resource name '%s' is already used: %v", name, err)
 		}
 	} else {
@@ -228,7 +231,7 @@ func (handler *HostHandler) Create(
 		networkHandler := NewNetworkHandler(handler.service)
 		n, err := networkHandler.Inspect(ctx, net)
 		if err != nil {
-			if _, ok := err.(resources.ErrResourceNotFound); ok {
+			if utils.IsNotFoundError(err) {
 				return nil, infraErr(err)
 			}
 			return nil, infraErrf(err, "failed to get network resource data: '%s'", net)
@@ -253,14 +256,15 @@ func (handler *HostHandler) Create(
 		networks = append(networks, net)
 	}
 
-	templates, err := handler.service.SelectTemplatesBySize(
-		resources.SizingRequirements{
-			MinCores:    cpu,
-			MinRAMSize:  ram,
-			MinDiskSize: disk,
-			MinGPU:      gpuNumber,
-			MinFreq:     freq,
-		}, force)
+	// templates, err := handler.service.SelectTemplatesBySize(
+	// 	resources.SizingRequirements{
+	// 		MinCores:    cpu,
+	// 		MinRAMSize:  ram,
+	// 		MinDiskSize: disk,
+	// 		MinGPU:      gpuNumber,
+	// 		MinFreq:     freq,
+	// 	}, force)
+	templates, err := handler.service.SelectTemplatesBySize(*sizing, force)
 	if err != nil {
 		return nil, infraErrf(err, "failed to find template corresponding to requested resources")
 	}
@@ -319,7 +323,7 @@ func (handler *HostHandler) Create(
 		if err != nil {
 			derr := handler.service.DeleteHost(host.ID)
 			if derr != nil {
-				log.Errorf("Failed to delete host '%s': %v", host.Name, derr)
+				log.Errorf("failed to delete host '%s': %v", host.Name, derr)
 			}
 		}
 	}()
@@ -336,11 +340,11 @@ func (handler *HostHandler) Create(
 		hostSizingV1 := v.(*propsv1.HostSizing)
 		hostSizingV1.Template = hostRequest.TemplateID
 		hostSizingV1.RequestedSize = &propsv1.HostSize{
-			Cores:     cpu,
-			RAMSize:   ram,
-			DiskSize:  disk,
-			GPUNumber: gpuNumber,
-			CPUFreq:   freq,
+			Cores:     sizing.MinCores,
+			RAMSize:   sizing.MinRAMSize,
+			DiskSize:  sizing.MinDiskSize,
+			GPUNumber: sizing.MinGPU,
+			CPUFreq:   sizing.MinFreq,
 		}
 		return nil
 	})
@@ -413,6 +417,7 @@ func (handler *HostHandler) Create(
 		return nil, infraErrf(err, "Metadata creation failed")
 	}
 	log.Infof("Compute resource created: '%s'", host.Name)
+
 	// Starting from here, remove metadata if exiting with error
 	defer func() {
 		if err != nil {
@@ -443,7 +448,7 @@ func (handler *HostHandler) Create(
 
 		if client.IsProvisioningError(err) {
 			log.Errorf("%+v", err)
-			return nil, fmt.Errorf("Error creating the host [%s], error provisioning the new host, please check safescaled logs", host.Name)
+			return nil, fmt.Errorf("error creating the host [%s], error provisioning the new host, please check safescaled logs", host.Name)
 		}
 
 		return nil, infraErr(err)
@@ -485,7 +490,9 @@ func (handler *HostHandler) Create(
 		return nil, err
 	}
 	if retcode != 0 {
-		return nil, fmt.Errorf("failed to finalize host installation: %s", stderr)
+		// Setting err will trigger defers
+		err = fmt.Errorf("failed to finalize host installation: %s", stderr)
+		return nil, err
 	}
 
 	// Reboot host
@@ -504,7 +511,7 @@ func (handler *HostHandler) Create(
 
 		if client.IsProvisioningError(err) {
 			log.Errorf("%+v", err)
-			return nil, fmt.Errorf("Error creating the host [%s], error provisioning the new host, please check safescaled logs", host.Name)
+			return nil, fmt.Errorf("error creating the host [%s], error provisioning the new host, please check safescaled logs", host.Name)
 		}
 
 		return nil, infraErr(err)
@@ -514,7 +521,7 @@ func (handler *HostHandler) Create(
 	select {
 	case <-ctx.Done():
 		log.Warnf("Host creation cancelled by safescale")
-		err = fmt.Errorf("Host creation canceld by safescale")
+		err = fmt.Errorf("host creation canceld by safescale")
 		return nil, err
 	default:
 	}
@@ -529,6 +536,7 @@ func (handler *HostHandler) getOrCreateDefaultNetwork() (*resources.Network, err
 	if err != nil {
 		switch err.(type) {
 		case resources.ErrResourceNotFound:
+		case utils.ErrNotFound:
 		default:
 			return nil, infraErr(err)
 		}
@@ -549,8 +557,8 @@ func (handler *HostHandler) getOrCreateDefaultNetwork() (*resources.Network, err
 
 // List returns the host list
 func (handler *HostHandler) List(ctx context.Context, all bool) ([]*resources.Host, error) {
-	log.Debugf("<<< safescale.server.handlers.HostHandler::List(%v)", all)
-	defer log.Debugf(">>> safescale.server.handlers.HostHandler::List(%v)", all)
+	log.Debugf("<<< lib.server.handlers.HostHandler::List(%v)", all)
+	defer log.Debugf(">>> lib.server.handlers.HostHandler::List(%v)", all)
 
 	if all {
 		return handler.service.ListHosts()
@@ -571,8 +579,8 @@ func (handler *HostHandler) List(ctx context.Context, all bool) ([]*resources.Ho
 // ForceInspect ...
 // If not found, return (nil, err)
 func (handler *HostHandler) ForceInspect(ctx context.Context, ref string) (*resources.Host, error) {
-	log.Debugf(">>> safescale.server.handlers.HostHandler::ForceInspect(%s)", ref)
-	defer log.Debugf("<<< safescale.server.handlers.HostHandler::ForceInspect(%s)", ref)
+	log.Debugf(">>> lib.server.handlers.HostHandler::ForceInspect(%s)", ref)
+	defer log.Debugf("<<< lib.server.handlers.HostHandler::ForceInspect(%s)", ref)
 
 	host, err := handler.Inspect(ctx, ref)
 	if err != nil {
@@ -585,8 +593,8 @@ func (handler *HostHandler) ForceInspect(ctx context.Context, ref string) (*reso
 // Inspect returns the host identified by ref, ref can be the name or the id
 // If not found, returns (nil, nil)
 func (handler *HostHandler) Inspect(ctx context.Context, ref string) (*resources.Host, error) {
-	log.Debugf(">>> safescale.server.handlers.HostHandler::Inspect(%s)", ref)
-	defer log.Debugf("<<< safescale.server.handlers.HostHandler::Inspect(%s)", ref)
+	log.Debugf(">>> lib.server.handlers.HostHandler::Inspect(%s)", ref)
+	defer log.Debugf("<<< lib.server.handlers.HostHandler::Inspect(%s)", ref)
 
 	mh, err := metadata.LoadHost(handler.service, ref)
 	if err != nil {
@@ -606,8 +614,8 @@ func (handler *HostHandler) Inspect(ctx context.Context, ref string) (*resources
 
 // Delete deletes host referenced by ref
 func (handler *HostHandler) Delete(ctx context.Context, ref string) error {
-	log.Debugf(">>> safescale.server.handlers.HostHandler::Delete(%s)", ref)
-	defer log.Debugf("<<< safescale.server.handlers.HostHandler::Delete(%s)", ref)
+	log.Debugf(">>> lib.server.handlers.HostHandler::Delete(%s)", ref)
+	defer log.Debugf("<<< lib.server.handlers.HostHandler::Delete(%s)", ref)
 
 	mh, err := metadata.LoadHost(handler.service, ref)
 	if err != nil {
@@ -735,6 +743,8 @@ func (handler *HostHandler) Delete(ctx context.Context, ref string) error {
 		switch err.(type) {
 		case resources.ErrResourceNotFound:
 			deleteMatadataOnly = true
+		case utils.ErrNotFound:
+			deleteMatadataOnly = true
 		default:
 			return infraErrf(err, "can't delete host")
 		}
@@ -746,7 +756,7 @@ func (handler *HostHandler) Delete(ctx context.Context, ref string) error {
 	}
 
 	if deleteMatadataOnly {
-		return fmt.Errorf("Unable to find the host even if it is described by metadatas\nInchoerent metadatas have been supressed")
+		return fmt.Errorf("unable to find the host even if it is described by metadatas\nInchoerent metadatas have been supressed")
 	}
 
 	select {
@@ -757,24 +767,33 @@ func (handler *HostHandler) Delete(ctx context.Context, ref string) error {
 			hostSizingV1 := v.(*propsv1.HostSizing)
 			return host.Properties.LockForRead(HostProperty.NetworkV1).ThenUse(func(v interface{}) error {
 				hostNetworkV1 := v.(*propsv1.HostNetwork)
-				//host's os name is not stored in metadatas so we used ubuntu 16.04 by default
+				//FIXME: host's os name is not stored in metadatas so we used ubuntu 18.04 by default
 				var err3 error
-				hostBis, err3 = handler.Create(context.Background(), host.Name, hostNetworkV1.DefaultNetworkID, hostSizingV1.AllocatedSize.Cores, hostSizingV1.AllocatedSize.RAMSize, hostSizingV1.AllocatedSize.DiskSize, "ubuntu 16.04", (len(hostNetworkV1.PublicIPv4)+len(hostNetworkV1.PublicIPv6)) != 0, hostSizingV1.AllocatedSize.GPUNumber, hostSizingV1.AllocatedSize.CPUFreq, true)
+				sizing := resources.SizingRequirements{
+					MinCores:    hostSizingV1.AllocatedSize.Cores,
+					MaxCores:    hostSizingV1.AllocatedSize.Cores,
+					MinFreq:     hostSizingV1.AllocatedSize.CPUFreq,
+					MinGPU:      hostSizingV1.AllocatedSize.GPUNumber,
+					MinRAMSize:  hostSizingV1.AllocatedSize.RAMSize,
+					MaxRAMSize:  hostSizingV1.AllocatedSize.RAMSize,
+					MinDiskSize: hostSizingV1.AllocatedSize.DiskSize,
+				}
+				hostBis, err3 = handler.Create(context.Background(), host.Name, hostNetworkV1.DefaultNetworkID, "ubuntu 18.04", (len(hostNetworkV1.PublicIPv4)+len(hostNetworkV1.PublicIPv6)) != 0, &sizing, true)
 				if err3 != nil {
-					return fmt.Errorf("Failed to stop host deletion : %s", err3.Error())
+					return fmt.Errorf("failed to stop host deletion : %s", err3.Error())
 				}
 				return nil
 			})
 		})
 		if err2 != nil {
-			return fmt.Errorf("Failed to cancel host deletion : %s", err2.Error())
+			return fmt.Errorf("failed to cancel host deletion : %s", err2.Error())
 		}
 
 		buf, err2 := hostBis.Serialize()
 		if err2 != nil {
-			return fmt.Errorf("Deleted Host recreated by safescale")
+			return fmt.Errorf("deleted Host recreated by safescale")
 		}
-		return fmt.Errorf("Deleted Host recreated by safescale : %s", buf)
+		return fmt.Errorf("deleted Host recreated by safescale : %s", buf)
 
 	default:
 	}
@@ -784,8 +803,8 @@ func (handler *HostHandler) Delete(ctx context.Context, ref string) error {
 
 // SSH returns ssh parameters to access the host referenced by ref
 func (handler *HostHandler) SSH(ctx context.Context, ref string) (*system.SSHConfig, error) {
-	log.Debugf(">>> safescale.server.handlers.HostHandler::SSH(%s)", ref)
-	defer log.Debugf("<<< safescale.server.handlers.HostHandler::SSH(%s)", ref)
+	log.Debugf(">>> lib.server.handlers.HostHandler::SSH(%s)", ref)
+	defer log.Debugf("<<< lib.server.handlers.HostHandler::SSH(%s)", ref)
 
 	// host, err := svc.Inspect(ref)
 	// if err != nil {

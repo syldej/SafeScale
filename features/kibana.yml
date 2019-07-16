@@ -1,0 +1,162 @@
+#
+# Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+---
+feature:
+    suitableFor:
+        host: yes
+        cluster: all
+    parameters:
+        - Version=7.2.0
+        - KibanaPort=5601
+        - KibanaHost={{.HostIP}}
+        - ElasticsearchURL=http://{{.HostIP}}:9200/
+    requirements:
+        cluster:
+            features:
+                - elasticsearch
+
+    install:
+        bash:
+            check:
+                pace: pkg
+                steps:
+                    pkg:
+                        targets:
+                            hosts: yes
+                            masters: all
+                            nodes: no
+                        run: |
+                            docker image ls {{ "--format '{{.Repository}}:{{.Tag}}'" }} | grep 'docker.elastic.co/kibana/kibana:{{ .Version }}' &>/dev/null
+
+            add:
+                pace: image,config,start
+                steps:
+                    image:
+                        targets:
+                            hosts: yes
+                            masters: all
+                            nodes: no
+                        run: |
+                            docker pull docker.elastic.co/kibana/kibana:{{ .Version }} || exit 192
+                            exit 0
+
+                    config:
+                        targets:
+                            hosts: yes
+                            masters: all
+                            nodes: no
+                        run: |
+                            mkdir -p ${SF_ETCDIR}/kibana ${SF_VARDIR}/kibana
+
+                            cat >${SF_ETCDIR}/kibana/kibana.yml <<-EOF
+                            server.name: {{.Hostname}}
+                            console.enabled: true
+                            elasticsearch:
+                            {{- if .ClusterFlavor }}
+                                hosts:
+                              {{- range .MasterIPs }}
+                                    - "{{ . }}"
+                              {{ end -}}
+                            {{ else }}
+                                hosts:
+                                    - "{{ .ElasticsearchHost }}"
+                            {{ end -}}
+                            EOF
+
+                            cat >${SF_ETCDIR}/kibana/docker-compose.yml <<-EOF
+                            version: '2.1'
+
+                            services:
+                                server:
+                                    image: docker.elastic.co/kibana/kibana:{{ .Version }}
+                                    ports:
+                                        - {{.HostIP}}:{{ .KibanaPort}}:5601
+                                    volumes:
+                                        - ${SF_ETCDIR}/kibana/kibana.yml:/usr/share/kibana/config/kibana.yml
+                                    restart: always
+                            EOF
+                            exit 0
+
+                    start:
+                        targets:
+                            hosts: yes
+                            masters: all
+                            nodes: no
+                        run: |
+                            {{ if .ClusterFlavor }}
+                            OPTIONS="-p kibana4safescale"
+                            {{ else }}
+                            OPTIONS=
+                            {{ end }}
+                            docker-compose -f ${SF_ETCDIR}/kibana/docker-compose.yml $OPTIONS up -d || exit 193
+                            exit 0
+
+            remove:
+                pace: stop,remove
+                steps:
+                    stop:
+                        targets:
+                            hosts: yes
+                            masters: all
+                            nodes: no
+                        run: |
+                            {{ if .ClusterFlavor }}
+                            OPTIONS="-p kibana4safescale"
+                            {{ else }}
+                            OPTIONS=
+                            {{ end }}
+                            docker-compose -f ${SF_ETCDIR}/kibana/docker-compose.yml $OPTIONS rm --stop -v --force || exit 194
+                            exit 0
+
+                    remove:
+                        targets:
+                            hosts: yes
+                            masters: all
+                            nodes: no
+                        run: |
+                            docker image rm -f docker.elastic.co/kibana/kibana:{{ .Version }}
+                            rm -rf ${SF_ETCDIR}/kibana ${SF_VARDIR}/kibana
+                            exit 0
+
+    proxy:
+        rules:
+            - name: kibana_svc
+              type: service
+              targets:
+                  hosts: true
+                  masters: all
+              content: |
+                  {
+                      "name": "kibana_{{.Hostname}}",
+                      "url": "http://{{.HostIP}}:5061/"
+                  }
+
+            - name: kibana_route
+              type: route
+              targets:
+                  hosts: true
+                  masters: all
+              content: |
+                  {
+                      "paths": ["/monitoring/kibana/"],
+                      "service": { "id": "{{.kibana_svc}}" },
+                      "source-control": {
+                          "whitelist": [ "{{ .CIDR }}" }, "{{.PublicIP}}", "127.0.0.1" } ]
+                      }
+                  }
+
+...

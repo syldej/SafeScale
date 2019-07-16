@@ -21,6 +21,7 @@ Here is an example of a TOML encoded configuration file :
     [tenants.compute]
         ProjectID = "<Project ID>"
         Region = "<Region>"
+        AvailabilityZone = "<Availability Zone>"
         DefaultImage = "<OS Image Name to use as default, ex: Ubuntu 18.04>"
 
     # This part defines configuration specifically applied to network resources (optional)
@@ -61,12 +62,13 @@ Here is the JSON equivalent of the example TOML configuration file :
       "compute": {
         "DefaultImage": "<OS Image Name to use as default, ex: Ubuntu 18.04>",
         "ProjectID": "<Project ID>",
-        "Region": "<Region>"
+        "Region": "<Region>",
+        "AvailabilityZone": "<Availability Zone>"
       },
       "identity": {
         "DomainName": "<Domain Name>",
         "Password": "<Password>",
-        "Username": "<Username>",
+        "Username": "<Username>"
       },
       "metadata": {
         "ApplicationKey": "<Openstack Application Key>",
@@ -102,6 +104,7 @@ tenants:
     DefaultImage: '<OS Image Name to use as default, ex: Ubuntu 18.04>'
     ProjectID: <Project ID>
     Region: <Region>
+    AvailabilityZone: <Availability Zone>
   identity:
     DomainName: <Domain Name>
     Password: <Password>
@@ -144,11 +147,11 @@ Each entry defines a tenant, using the field `name` to identify it, and the fiel
 
 Inside a `[[tenants]]` item, you can have these sections :
 
-- `[tenant.identity]`
-- `[tenant.compute]`
-- `[tenant.network]`
-- `[tenant.objectstorage]`
-- `[tenant.metadata]`
+- `[tenants.identity]`
+- `[tenants.compute]`
+- `[tenants.network]`
+- `[tenants.objectstorage]`
+- `[tenants.metadata]`
 
 In the description of sections hereafter, each keyword is annotated with these tags:
 
@@ -157,7 +160,7 @@ In the description of sections hereafter, each keyword is annotated with these t
 - OPTIONAL: this means the keyword is optional
 - CLIENT: this means the keyword presence depends on driver used
 
-Combinaisons are possible :
+Combinations are possible :
 
 - MANDATORY, CLIENT means the keyword is mandatory for specific driver(s)
 - MANDATORY, INHERIT means the keyword is mandatory but can inherit from same keyword from other section
@@ -165,7 +168,7 @@ Combinaisons are possible :
 - OPTIONAL, CLIENT means the keyword is optional and restricted to specific driver(s)
 - OPTIONAL, CLIENT, INHERIT means the keyword is optional, valid only for some specific driver(s) and can inherit from same keyword from other section
 
-### Section `[tenant.identity]`
+### Section `[tenants.identity]`
 
 The valid keywords in this section are :
 
@@ -182,7 +185,7 @@ The valid keywords in this section are :
 > | `AlternateApiApplicationSecret` | OPTIONAL, CLIENT |
 > | `AlternateApiConsumerKey` | OPTIONAL, CLIENT |
 
-### Section ``[tenant.compute]``
+### Section ``[tenants.compute]``
 
 The valid keywords in this section are :
 
@@ -193,10 +196,12 @@ The valid keywords in this section are :
 > | `DomainName` | OPTIONAL, CLIENT |
 > | `ProjectName` | OPTIONAL, CLIENT |
 > | `ProjectID` | OPTIONAL, CLIENT |
+> | `Region` | MANDATORY |
+> | `AvailabilityZone` | MANDATORY |
 > | `Scannable` | OPTIONAL |
 > | `OperatorUsername` | OPTIONAL |
 
-### Section ``[tenant.network]``
+### Section ``[tenants.network]``
 
 The valid keywords in this section are :
 
@@ -206,7 +211,7 @@ The valid keywords in this section are :
 > | `VPCCIDR` | OPTIONAL, CLIENT |
 > | `VPCName` | OPTIONAL, CLIENT |
 
-### Section ``[tenant.objectstorage]``
+### Section ``[tenants.objectstorage]``
 
 The valid keywords in this section are :
 
@@ -221,13 +226,14 @@ The valid keywords in this section are :
 > | `ProjectID` | OPTIONAL, CLIENT |
 > | `ProjectName` | OPTIONAL, CLIENT |
 > | `Password` | MANDATORY, INHERIT |
-> | `Region` | OPTIONAL |
+> | `Region` | OPTIONAL, INHERIT |
+> | `AvailabilityZone` | OPTIONAL, INHERIT |
 > | `SecretKey` | MANDATORY, INHERIT |
 > | `Tenant` | OPTIONAL, CLIENT |
 > | `Type` | MANDATORY |
 > | `Username` | MANDATORY, INHERIT |
 
-### Section [tenant.metadata]
+### Section [tenants.metadata]
 
 The valid keywords in this section are :
 
@@ -242,7 +248,8 @@ The valid keywords in this section are :
 > | `ProjectID` | OPTIONAL, CLIENT, INHERIT |
 > | `ProjectName` | OPTIONAL, CLIENT, INHERIT |
 > | `Password` | MANDATORY, INHERIT |
-> | `Region` | OPTIONAL |
+> | `Region` | OPTIONAL, INHERIT |
+> | `AvailabilityZone` | OPTIONAL, INHERIT |
 > | `SecretKey` | MANDATORY, INHERIT |
 > | `Tenant` | OPTIONAL, CLIENT, INHERIT |
 > | `Type`| MANDATORY, INHERIT |
@@ -267,6 +274,7 @@ It defines the "driver" to communicate with the provider. Valid values are:
 > | `"flexibleengine"` |
 > | `"opentelekom"` |
 > | `"ovh"` |
+> | `"gcp"` |
 
 ### <a name="kw_AccessKey"></a> `AccessKey`: alias, see [`Username`](#kw_Username)
 
@@ -334,7 +342,16 @@ Is meaningful for some providers:
 ### <a name="kw_Region"></a> `Region`
 
 Contains the region to connect to. Values depend on provider.<br>
-May be used in `tenants.compute`, `tenants.objectstorage` and `tenants.metadata`.
+Is mandatory in `tenants.compute` 
+May be used in `tenants.objectstorage` and `tenants.metadata`.
+If the Region is empty in `tenants.metadata`, safescale searches for valid values in `tenants.objectstorage`, then in `tenants.compute` (where is mandatory) 
+
+### <a name="kw_AvailabilityZone"></a> `AvailabilityZone`
+
+Contains the zone to connect to. Values depend on provider.<br>
+Is mandatory in `tenants.compute`
+May be used in `tenants.objectstorage` and `tenants.metadata`.
+If the AvailabilityZone is empty in `tenants.metadata`, safescale searches for valid values in `tenants.objectstorage`, then in `tenants.compute` (where is mandatory)
 
 ### <a name="kw_Scannable"></a> `Scannable`
 
@@ -381,3 +398,59 @@ Is meaningful for some drivers only:
 > | --- |
 > | `flexibleengine` |
 > | `opentelekom` |
+
+
+### GCP
+
+Get project number from project settings:
+https://console.cloud.google.com/iam-admin/settings/project?project=<your-project-here>
+
+Get service account keys in json format from:
+https://console.developers.google.com/apis/credentials?project=<your-project-here>
+
+The file retrieved from there has the following format:
+
+```json
+{
+  "type": "service_account",
+  "project_id": "*****************",
+  "private_key_id": "*****************",
+  "private_key": "-----BEGIN PRIVATE KEY-----\n*****************\n-----END PRIVATE KEY-----\n",
+  "client_email": "*****************",
+  "client_id": "*****************",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "*****************"
+}
+```
+
+The tenants.toml file contains the same fields as the service account json file AND the project number from the project settings page:
+
+```yaml
+[[tenants]]
+    client = "gcp"
+    name = "my-google-account-project-x"
+    
+    [tenants.identity]
+        User = "******@****"
+        Password = "**********"
+        ProjectNumber = "*****************"
+        project_id = "************"
+        private_key_id = "******************"
+        private_key = "-----BEGIN PRIVATE KEY-----\n**********************************\n-----END PRIVATE KEY-----\n"
+        client_email = "*****************************"
+        client_id = "******************"
+        auth_uri = "https://accounts.google.com/o/oauth2/auth"
+        token_uri = "https://oauth2.googleapis.com/token"
+        auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+        client_x509_cert_url = "*********************************************************"
+
+    [tenants.compute]
+        Region = "europe-west1"
+        Zone = "europe-west1-b"
+
+    [tenants.objectstorage]
+        Type        = "google"
+        Region      = "europe-west1-b"
+```

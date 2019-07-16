@@ -11,6 +11,8 @@ import (
 	"github.com/satori/go.uuid"
 )
 
+//go:generate mockgen -destination=../mocks/mock_taskrunner.go -package=mocks github.com/CS-SI/SafeScale/lib/utils/concurrency TaskRunner
+
 // TaskRunner ...
 type TaskRunner interface {
 	ID() string
@@ -85,6 +87,8 @@ const (
 
 // TaskFunc ...
 type TaskFunc func(tr TaskRunner, parameters interface{})
+
+//go:generate mockgen -destination=../mocks/mock_task.go -package=mocks github.com/CS-SI/SafeScale/lib/utils/concurrency Task
 
 // Task ...
 type Task interface {
@@ -205,7 +209,7 @@ func (t *task) ForceID(id string) {
 // Start runs in goroutine the function with parameters
 func (t *task) Start(params interface{}) Task {
 	if t.status != READY {
-		panic(fmt.Sprintf("Can't start task '%s': not ready!", t.ID()))
+		panic(fmt.Sprintf("can't start task '%s': not ready!", t.ID()))
 	}
 	if t.fn == nil {
 		t.status = DONE
@@ -234,7 +238,7 @@ func (t *task) wrapper(params interface{}) {
 
 func (t *task) Wait() {
 	if t.status != RUNNING {
-		panic(fmt.Sprintf("Can't wait task '%s': not running!", t.ID()))
+		panic(fmt.Sprintf("can't wait task '%s': not running!", t.ID()))
 	}
 	t.result = <-t.resultCh
 	t.err = <-t.errorCh
@@ -251,7 +255,7 @@ func (t *task) Run(params interface{}) error {
 
 func (t *task) TryWait(duration time.Duration) error {
 	if t.status != RUNNING {
-		panic(fmt.Sprintf("Can't wait task '%s': not running!", t.ID()))
+		panic(fmt.Sprintf("can't wait task '%s': not running!", t.ID()))
 	}
 	select {
 	case <-t.doneCh:
@@ -264,7 +268,7 @@ func (t *task) TryWait(duration time.Duration) error {
 
 func (t *task) Reset() {
 	if t.status == RUNNING {
-		panic(fmt.Sprintf("Can't reset task '%s': task running!", t.ID()))
+		panic(fmt.Sprintf("can't reset task '%s': task running!", t.ID()))
 	}
 	t.status = READY
 	t.err = nil

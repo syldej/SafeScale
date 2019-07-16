@@ -159,9 +159,13 @@ identify_nics() {
     if [ ! -z $PU_IP ]; then
         if is_ip_private $PU_IP; then
             PU_IF=
-            # Works with FlexibleEngine and potentially with AWS (not tested yet)
-            PU_IP=$(curl http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null)
-            [ -z $PU_IP ] && PU_IP=$(curl ipinfo.io/ip 2>/dev/null)
+
+            NO404=$(curl -s -o /dev/null -w "%{http_code}" http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null | grep 404)
+            if [ -z $NO404 ]; then
+                # Works with FlexibleEngine and potentially with AWS (not tested yet)
+                PU_IP=$(curl http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null)
+                [ -z $PU_IP ] && PU_IP=$(curl ipinfo.io/ip 2>/dev/null)
+            fi
         fi
     fi
     [ -z $PR_IFs ] && PR_IFs=$(substring_diff "$NICS" "$PU_IF")
@@ -175,7 +179,7 @@ identify_nics() {
 substring_diff() {
     read -a l1 <<<$1
     read -a l2 <<<$2
-    echo ${l1[@]} ${l2[@]} | tr ' ' '\n' | sort | uniq -u
+    echo "${l1[@]}" "${l2[@]}" | tr ' ' '\n' | sort | uniq -u
 }
 
 # If host isn't a gateway, we need to configure temporarily and manually gateway on private hosts to be able to update packages
@@ -585,8 +589,21 @@ install_drivers_nvidia() {
 early_packages_update() {
     ensure_network_connectivity
 
+    # Ensure IPv4 will be used before IPv6 when resolving hosts (the latter shouldn't work regarding the network configuration we set)
+    cat >/etc/gai.conf <<-EOF
+precedence ::ffff:0:0/96 100
+scopev4 ::ffff:169.254.0.0/112  2
+scopev4 ::ffff:127.0.0.0/104    2
+scopev4 ::ffff:0.0.0.0/96       14
+EOF
+
     case $LINUX_KIND in
         debian)
+            # Disable interactive installations
+            export DEBIAN_FRONTEND=noninteractive
+            # # Force use of IPv4 addresses when installing packages
+            # echo 'Acquire::ForceIPv4 "true";' >/etc/apt/apt.conf.d/99force-ipv4
+
             sfApt update
             # Force update of systemd, pciutils
             sfApt install -qy systemd pciutils || fail 211
@@ -595,6 +612,11 @@ early_packages_update() {
             ;;
 
         ubuntu)
+            # Disable interactive installations
+            export DEBIAN_FRONTEND=noninteractive
+            # # Force use of IPv4 addresses when installing packages
+            # echo 'Acquire::ForceIPv4 "true";' >/etc/apt/apt.conf.d/99force-ipv4
+
             sfApt update
             # Force update of systemd, pciutils and netplan
             if dpkg --compare-versions $(sfGetFact "linux version") ge 17.10; then
@@ -610,6 +632,9 @@ early_packages_update() {
             ;;
 
         redhat|centos)
+            # # Force use of IPv4 addresses when installing packages
+            # echo "ip_resolve=4" >>/etc/yum.conf
+
             # Force update of systemd and pciutils
             yum install -qy systemd pciutils yum-utils || fail 211
             # systemd, if updated, is restarted, so we may need to ensure again network connectivity
@@ -625,10 +650,10 @@ early_packages_update() {
 install_packages() {
      case $LINUX_KIND in
         ubuntu|debian)
-            sfApt install -y -qq jq &>/dev/null || fail 213
+            sfApt install -y -qq jq zip time zip &>/dev/null || fail 213
             ;;
         redhat|centos)
-            yum install --enablerepo=epel -y -q wget jq time &>/dev/null || fail 214
+            yum install --enablerepo=epel -y -q wget jq time zip &>/dev/null || fail 214
             ;;
         *)
             echo "Unsupported Linux distribution '$LINUX_KIND'!"
@@ -662,21 +687,41 @@ configure_locale() {
     export LANGUAGE=en_US.UTF-8 LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 }
 
-# ---- Main
+force_dbus_restart() {
+    case $LINUX_KIND in
+        ubuntu)
+            sudo sed -i 's/^RefuseManualStart=.*$/RefuseManualStart=no/g' /lib/systemd/system/dbus.service
+            sudo systemctl daemon-reexec
+            sudo systemctl restart dbus.service
+            ;;
+    esac
+}
 
-export DEBIAN_FRONTEND=noninteractive
+update_kernel_settings() {
+    cat >/etc/sysctl.d/20-safescale.conf <<-EOF
+vm.max_map_count=262144
+
+# To allow to bring up an interface with an IP that is not considered local (not part of the /etc/network/interfaces|/etc/sysconfig/network-scripts)
+# In other words, to allow Virtual IP
+net.ipv4.ip_nonlocal_bind=1
+EOF
+    sysctl -p
+}
+
+# ---- Main
 
 configure_locale
 configure_dns
-early_packages_update
 add_common_repos
+early_packages_update
 
 identify_nics
 configure_network
 
-
 install_packages
 lspci | grep -i nvidia &>/dev/null && install_drivers_nvidia
+
+update_kernel_settings || fail 216
 
 echo -n "0,linux,${LINUX_KIND},$(date +%Y/%m/%d-%H:%M:%S)" >/opt/safescale/var/state/user_data.phase2.done
 # For compatibility with previous user_data implementation (until v19.03.x)...
@@ -685,6 +730,8 @@ ln -s /opt/safescale/var/state/user_data.phase2.done /var/tmp/user_data.done
 # !!! DON'T REMOVE !!! #insert_tag allows to add something just before exiting,
 #                      but after the template has been realized (cf. libvirt Stack)
 #insert_tag
+
+force_dbus_restart
 
 set +x
 exit 0

@@ -25,13 +25,15 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 
-	google_protobuf "github.com/golang/protobuf/ptypes/empty"
+	protobuf "github.com/golang/protobuf/ptypes/empty"
 
-	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/IPVersion"
 	pb "github.com/CS-SI/SafeScale/lib"
 	"github.com/CS-SI/SafeScale/lib/server/handlers"
+	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
+	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/IPVersion"
 	"github.com/CS-SI/SafeScale/lib/server/utils"
 	conv "github.com/CS-SI/SafeScale/lib/server/utils"
+	srvutils "github.com/CS-SI/SafeScale/lib/server/utils"
 )
 
 // NetworkHandler ...
@@ -62,14 +64,28 @@ func (s *NetworkListener) Create(ctx context.Context, in *pb.NetworkDefinition) 
 		return nil, grpc.Errorf(codes.FailedPrecondition, "can't create network: no tenant set")
 	}
 
+	var sizing *resources.SizingRequirements
+	if in.Gateway.Sizing == nil {
+		sizing = &resources.SizingRequirements{
+			MinCores:    int(in.Gateway.Sizing.MinCpuCount),
+			MaxCores:    int(in.Gateway.Sizing.MaxCpuCount),
+			MinRAMSize:  in.Gateway.Sizing.MinRamSize,
+			MaxRAMSize:  in.Gateway.Sizing.MaxRamSize,
+			MinDiskSize: int(in.Gateway.Sizing.MinDiskSize),
+			MinGPU:      int(in.Gateway.Sizing.GpuCount),
+			MinFreq:     in.Gateway.Sizing.MinCpuFreq,
+		}
+	} else {
+		s := srvutils.FromPBHostSizing(*in.Gateway.Sizing)
+		sizing = &s
+	}
+
 	handler := NetworkHandler(tenant.Service)
 	network, err := handler.Create(ctx,
 		in.GetName(),
 		in.GetCidr(),
 		IPVersion.IPv4,
-		int(in.Gateway.GetCpu()),
-		in.GetGateway().GetRam(),
-		int(in.GetGateway().GetDisk()),
+		*sizing,
 		in.GetGateway().GetImageId(),
 		in.GetGateway().GetName(),
 	)
@@ -116,7 +132,7 @@ func (s *NetworkListener) List(ctx context.Context, in *pb.NetworkListRequest) (
 // Inspect returns infos on a network
 func (s *NetworkListener) Inspect(ctx context.Context, in *pb.Reference) (*pb.Network, error) {
 	log.Infof("Listeners: network inspect '%s' called'", in.Name)
-	defer log.Debugf("safescale.server.listeners.NetworkListener.Inspect(%s) done'", in.Name)
+	defer log.Debugf("lib.server.listeners.NetworkListener.Inspect(%s) done'", in.Name)
 
 	ctx, cancelFunc := context.WithCancel(ctx)
 
@@ -126,7 +142,7 @@ func (s *NetworkListener) Inspect(ctx context.Context, in *pb.Reference) (*pb.Ne
 
 	ref := utils.GetReference(in)
 	if ref == "" {
-		return nil, fmt.Errorf("Can't inspect network: neither name nor id given as reference")
+		return nil, fmt.Errorf("can't inspect network: neither name nor id given as reference")
 	}
 
 	tenant := GetCurrentTenant()
@@ -148,7 +164,7 @@ func (s *NetworkListener) Inspect(ctx context.Context, in *pb.Reference) (*pb.Ne
 }
 
 // Delete a network
-func (s *NetworkListener) Delete(ctx context.Context, in *pb.Reference) (*google_protobuf.Empty, error) {
+func (s *NetworkListener) Delete(ctx context.Context, in *pb.Reference) (*protobuf.Empty, error) {
 	log.Infof("Delete Network called for network '%s'", in.GetName())
 
 	ctx, cancelFunc := context.WithCancel(ctx)
@@ -175,5 +191,5 @@ func (s *NetworkListener) Delete(ctx context.Context, in *pb.Reference) (*google
 	}
 
 	log.Infof("Network '%s' successfully deleted.", ref)
-	return &google_protobuf.Empty{}, nil
+	return &protobuf.Empty{}, nil
 }

@@ -34,10 +34,13 @@ type KeyPair struct {
 // SizingRequirements represents host sizing requirements to fulfil
 type SizingRequirements struct {
 	MinCores    int     `json:"min_cores,omitempty"`
+	MaxCores    int     `json:"max_cores,omitempty"`
 	MinRAMSize  float32 `json:"min_ram_size,omitempty"`
+	MaxRAMSize  float32 `json:"max_ram_size,omitempty"`
 	MinDiskSize int     `json:"min_disk_size,omitempty"`
 	MinGPU      int     `json:"min_gpu,omitempty"`
 	MinFreq     float32 `json:"min_freq,omitempty"`
+	Replaceable bool    `json:"replaceable,omitempty"` // Tells if we accept server that could be removed without notice (AWS proposes such kind of server with SPOT
 }
 
 // StoredCPUInfo ...
@@ -69,10 +72,18 @@ type StoredCPUInfo struct {
 	PricePerHour   float64 `json:"price_in_dollars_hour"`
 }
 
-// Image representes an OS image
+// Image represents an OS image
 type Image struct {
 	ID   string `json:"id,omitempty"`
 	Name string `json:"name,omitempty"`
+	URL  string // FIXME Gcp custom
+}
+
+func (i Image) OK() bool {
+	result := true
+	result = result && i.ID != ""
+	result = result && i.Name != ""
+	return result
 }
 
 // HostRequest represents requirements to create host
@@ -95,6 +106,19 @@ type HostRequest struct {
 	KeyPair *KeyPair
 	// Password contains the safescale password useable on host console only
 	Password string
+	// DiskSize allows to ask for a specific size for system disk (in GB)
+	DiskSize int
+}
+
+func (hr HostRequest) OK() bool {
+	// FIXME Validate this struct
+	result := true
+	result = result && hr.ResourceName != ""
+	result = result && hr.HostName != ""
+	result = result && len(hr.Networks) > 0
+	result = result && hr.TemplateID != ""
+	result = result && hr.ImageID != ""
+	return result
 }
 
 // HostDefinition ...
@@ -122,6 +146,14 @@ type HostTemplate struct {
 	Name      string  `json:"name,omitempty"`
 }
 
+// FIXME Review all OK methods
+func (h HostTemplate) OK() bool {
+	result := true
+	result = result && h.ID != ""
+	result = result && h.Name != ""
+	return result
+}
+
 // Host contains the information about a host
 type Host struct {
 	ID         string                    `json:"id,omitempty"`
@@ -137,6 +169,16 @@ func NewHost() *Host {
 	return &Host{
 		Properties: serialize.NewJSONProperties("resources.host"),
 	}
+}
+
+func (h Host) OK() bool {
+	result := true
+	result = result && h.ID != ""
+	result = result && h.Name != ""
+	result = result && h.PrivateKey != ""
+	result = result && h.Password != ""
+	result = result && h.Properties != nil
+	return result
 }
 
 // GetAccessIP returns the IP to reach the host

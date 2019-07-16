@@ -20,7 +20,7 @@ import (
 	"context"
 	"fmt"
 
-	google_protobuf "github.com/golang/protobuf/ptypes/empty"
+	protobuf "github.com/golang/protobuf/ptypes/empty"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 
@@ -28,8 +28,9 @@ import (
 
 	pb "github.com/CS-SI/SafeScale/lib"
 	"github.com/CS-SI/SafeScale/lib/server/handlers"
+	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
 	"github.com/CS-SI/SafeScale/lib/server/utils"
-	conv "github.com/CS-SI/SafeScale/lib/server/utils"
+	srvutils "github.com/CS-SI/SafeScale/lib/server/utils"
 )
 
 // HostHandler ...
@@ -67,13 +68,13 @@ type StoredCPUInfo struct {
 }
 
 // Start ...
-func (s *HostListener) Start(ctx context.Context, in *pb.Reference) (*google_protobuf.Empty, error) {
+func (s *HostListener) Start(ctx context.Context, in *pb.Reference) (*protobuf.Empty, error) {
 	log.Infof("Listeners: host start '%s' called", in.Name)
 	defer log.Debugf("Listeners: host start '%s' done", in.Name)
 
 	ctx, cancelFunc := context.WithCancel(ctx)
 	if err := utils.ProcessRegister(ctx, cancelFunc, "Start Host "+in.GetName()); err != nil {
-		return nil, fmt.Errorf("Failed to register the process : %s", err.Error())
+		return nil, fmt.Errorf("failed to register the process : %s", err.Error())
 	}
 
 	tenant := GetCurrentTenant()
@@ -90,11 +91,11 @@ func (s *HostListener) Start(ctx context.Context, in *pb.Reference) (*google_pro
 	}
 
 	log.Infof("Host '%s' successfully started", ref)
-	return &google_protobuf.Empty{}, nil
+	return &protobuf.Empty{}, nil
 }
 
 // Stop ...
-func (s *HostListener) Stop(ctx context.Context, in *pb.Reference) (*google_protobuf.Empty, error) {
+func (s *HostListener) Stop(ctx context.Context, in *pb.Reference) (*protobuf.Empty, error) {
 	log.Infof("Listeners: host stop '%s' called", in.Name)
 	defer log.Debugf("Listeners: host stop '%s' done", in.Name)
 
@@ -118,11 +119,11 @@ func (s *HostListener) Stop(ctx context.Context, in *pb.Reference) (*google_prot
 	}
 
 	log.Infof("Host '%s' stopped", ref)
-	return &google_protobuf.Empty{}, nil
+	return &protobuf.Empty{}, nil
 }
 
 // Reboot ...
-func (s *HostListener) Reboot(ctx context.Context, in *pb.Reference) (*google_protobuf.Empty, error) {
+func (s *HostListener) Reboot(ctx context.Context, in *pb.Reference) (*protobuf.Empty, error) {
 	log.Infof("Listeners: host reboot '%s' called", in.Name)
 	defer log.Debugf("Listeners: host reboot '%s' done", in.Name)
 
@@ -146,7 +147,7 @@ func (s *HostListener) Reboot(ctx context.Context, in *pb.Reference) (*google_pr
 	}
 
 	log.Infof("Host '%s' successfully rebooted.", ref)
-	return &google_protobuf.Empty{}, nil
+	return &protobuf.Empty{}, nil
 }
 
 // List available hosts
@@ -175,7 +176,7 @@ func (s *HostListener) List(ctx context.Context, in *pb.HostListRequest) (*pb.Ho
 	// Map resources.Host to pb.Host
 	var pbhost []*pb.Host
 	for _, host := range hosts {
-		pbhost = append(pbhost, conv.ToPBHost(host))
+		pbhost = append(pbhost, srvutils.ToPBHost(host))
 	}
 	rv := &pb.HostList{Hosts: pbhost}
 	return rv, nil
@@ -198,24 +199,48 @@ func (s *HostListener) Create(ctx context.Context, in *pb.HostDefinition) (*pb.H
 		return nil, grpc.Errorf(codes.FailedPrecondition, "can't create host: no tenant set")
 	}
 
+	var sizing *resources.SizingRequirements
+	if in.Sizing == nil {
+		sizing = &resources.SizingRequirements{
+			MinCores:    int(in.GetCpuCount()),
+			MaxCores:    int(in.GetCpuCount()),
+			MinRAMSize:  in.GetRam(),
+			MaxRAMSize:  in.GetRam(),
+			MinDiskSize: int(in.GetDisk()),
+			MinGPU:      int(in.GetGpuCount()),
+			MinFreq:     in.GetCpuFreq(),
+		}
+	} else {
+		s := srvutils.FromPBHostSizing(*in.Sizing)
+		sizing = &s
+	}
+
 	handler := HostHandler(tenant.Service)
 	host, err := handler.Create(ctx,
 		in.GetName(),
 		in.GetNetwork(),
-		int(in.GetCpuCount()),
-		in.GetRam(),
-		int(in.GetDisk()),
 		in.GetImageId(),
 		in.GetPublic(),
-		int(in.GetGpuCount()),
-		float32(in.GetCpuFreq()),
+		sizing,
 		in.Force,
 	)
+	// host, err := handler.Create(ctx,
+	// 	in.GetName(),
+	// 	in.GetNetwork(),
+	// 	int(in.GetCpuCount()),
+	// 	in.GetRam(),
+	// 	int(in.GetDisk()),
+	// 	in.GetImageId(),
+	// 	in.GetPublic(),
+	// 	int(in.GetGpuCount()),
+	// 	float32(in.GetCpuFreq()),
+	// 	in.Force,
+	// )
 	if err != nil {
 		return nil, grpc.Errorf(codes.Internal, err.Error())
 	}
 	log.Infof("Host '%s' created", in.GetName())
-	return conv.ToPBHost(host), nil
+	return srvutils.ToPBHost(host), nil
 
 }
 
@@ -249,7 +274,7 @@ func (s *HostListener) Resize(ctx context.Context, in *pb.HostDefinition) (*pb.H
 		return nil, grpc.Errorf(codes.Internal, err.Error())
 	}
 	log.Infof("Host '%s' resized", in.GetName())
-	return conv.ToPBHost(host), nil
+	return srvutils.ToPBHost(host), nil
 }
 
 // Status of a host
@@ -265,7 +290,7 @@ func (s *HostListener) Status(ctx context.Context, in *pb.Reference) (*pb.HostSt
 
 	ref := utils.GetReference(in)
 	if ref == "" {
-		return nil, fmt.Errorf("Can't get host status: neither name nor id given as reference")
+		return nil, fmt.Errorf("can't get host status: neither name nor id given as reference")
 	}
 
 	tenant := GetCurrentTenant()
@@ -279,14 +304,14 @@ func (s *HostListener) Status(ctx context.Context, in *pb.Reference) (*pb.HostSt
 	if err != nil {
 		return nil, grpc.Errorf(codes.Internal, err.Error())
 	}
-	return conv.ToHostStatus(host), nil
+	return srvutils.ToHostStatus(host), nil
 }
 
 // Inspect an host
 func (s *HostListener) Inspect(ctx context.Context, in *pb.Reference) (*pb.Host, error) {
 	log.Infof("Receiving 'host inspect %s'", in.Name)
-	log.Debugf(">>> safescale.server.listeners.HostListener::Inspect(%s)", in.Name)
-	defer log.Debugf("<<< safescale.server.listeners.HostListener::Inspect(%s)", in.Name)
+	log.Debugf(">>> lib.server.listeners.HostListener::Inspect(%s)", in.Name)
+	defer log.Debugf("<<< lib.server.listeners.HostListener::Inspect(%s)", in.Name)
 
 	ctx, cancelFunc := context.WithCancel(ctx)
 
@@ -310,14 +335,14 @@ func (s *HostListener) Inspect(ctx context.Context, in *pb.Reference) (*pb.Host,
 	if err != nil {
 		return nil, grpc.Errorf(codes.Internal, fmt.Sprintf("can't inspect host: %v", err))
 	}
-	return conv.ToPBHost(host), nil
+	return srvutils.ToPBHost(host), nil
 }
 
 // Delete an host
-func (s *HostListener) Delete(ctx context.Context, in *pb.Reference) (*google_protobuf.Empty, error) {
+func (s *HostListener) Delete(ctx context.Context, in *pb.Reference) (*protobuf.Empty, error) {
 	log.Infof("Receiving 'host delete %s'", in.Name)
-	log.Debugf(">>> safescale.server.listeners.HostListener::Delete(%s)", in.Name)
-	defer log.Debugf("<<< safescale.server.Listeners.HostListener::Delete(%s)", in.Name)
+	log.Debugf(">>> lib.server.listeners.HostListener::Delete(%s)", in.Name)
+	defer log.Debugf("<<< lib.server.Listeners.HostListener::Delete(%s)", in.Name)
 
 	ctx, cancelFunc := context.WithCancel(ctx)
 
@@ -327,7 +352,7 @@ func (s *HostListener) Delete(ctx context.Context, in *pb.Reference) (*google_pr
 
 	ref := utils.GetReference(in)
 	if ref == "" {
-		return nil, fmt.Errorf("Can't delete host: neither name nor id given as reference")
+		return nil, fmt.Errorf("can't delete host: neither name nor id given as reference")
 	}
 
 	tenant := GetCurrentTenant()
@@ -342,13 +367,13 @@ func (s *HostListener) Delete(ctx context.Context, in *pb.Reference) (*google_pr
 		return nil, grpc.Errorf(codes.Internal, err.Error())
 	}
 	log.Infof("Host '%s' successfully deleted.", ref)
-	return &google_protobuf.Empty{}, nil
+	return &protobuf.Empty{}, nil
 }
 
 // SSH returns ssh parameters to access an host
 func (s *HostListener) SSH(ctx context.Context, in *pb.Reference) (*pb.SshConfig, error) {
-	log.Debugf(">>> safescale.server.listeners.HostListener::SSH(%s)", in.Name)
-	defer log.Debugf("<<< safescale.server.listeners.HostListener::SSH(%s)", in.Name)
+	log.Debugf(">>> lib.server.listeners.HostListener::SSH(%s)", in.Name)
+	defer log.Debugf("<<< lib.server.listeners.HostListener::SSH(%s)", in.Name)
 
 	ctx, cancelFunc := context.WithCancel(ctx)
 
@@ -358,7 +383,7 @@ func (s *HostListener) SSH(ctx context.Context, in *pb.Reference) (*pb.SshConfig
 
 	ref := utils.GetReference(in)
 	if ref == "" {
-		return nil, fmt.Errorf("Can't ssh to host: neither name nor id given as reference")
+		return nil, fmt.Errorf("can't ssh to host: neither name nor id given as reference")
 	}
 
 	tenant := GetCurrentTenant()
@@ -372,5 +397,5 @@ func (s *HostListener) SSH(ctx context.Context, in *pb.Reference) (*pb.SshConfig
 	if err != nil {
 		return nil, err
 	}
-	return conv.ToPBSshConfig(sshConfig), nil
+	return srvutils.ToPBSshConfig(sshConfig), nil
 }

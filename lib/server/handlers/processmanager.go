@@ -19,9 +19,11 @@ package handlers
 import (
 	"context"
 
-	"github.com/CS-SI/SafeScale/lib/server/utils"
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
+	"github.com/CS-SI/SafeScale/lib/server/utils"
 )
+
+//go:generate mockgen -destination=../mocks/mock_processmanager.go -package=mocks github.com/CS-SI/SafeScale/lib/server/handlers ProcessManagerAPI
 
 // ProcessManagerAPI defines API to manipulate process
 type ProcessManagerAPI interface {
@@ -31,11 +33,11 @@ type ProcessManagerAPI interface {
 
 // ProcessManagerHandler service
 type ProcessManagerHandler struct {
-	service *iaas.Service
+	service iaas.Service
 }
 
 // NewProcessManagerHandler creates a Volume service
-func NewProcessManagerHandler(svc *iaas.Service) ProcessManagerAPI {
+func NewProcessManagerHandler(svc iaas.Service) ProcessManagerAPI {
 	return &ProcessManagerHandler{
 		service: svc,
 	}

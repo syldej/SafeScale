@@ -19,9 +19,10 @@ package dcos
 import (
 	"bytes"
 	"fmt"
-	"github.com/CS-SI/SafeScale/lib/utils"
 	"sync/atomic"
 	txttmpl "text/template"
+
+	"github.com/CS-SI/SafeScale/lib/utils"
 
 	rice "github.com/GeertJohan/go.rice"
 	log "github.com/sirupsen/logrus"
@@ -33,7 +34,6 @@ import (
 	"github.com/CS-SI/SafeScale/lib/server/cluster/enums/Complexity"
 	"github.com/CS-SI/SafeScale/lib/server/cluster/enums/NodeType"
 	"github.com/CS-SI/SafeScale/lib/server/cluster/flavors/dcos/enums/ErrorCode"
-	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
 	"github.com/CS-SI/SafeScale/lib/utils/template"
 )
@@ -41,8 +41,6 @@ import (
 //go:generate rice embed-go
 
 const (
-	dcosVersion string = "1.11.6"
-
 	bootstrapHTTPPort = 10080
 
 	centos = "CentOS 7.3"
@@ -72,11 +70,13 @@ var (
 		DefaultMasterSizing:         masterSizing,
 		DefaultNodeSizing:           nodeSizing,
 		DefaultImage:                defaultImage,
+		ConfigureGateway:            configureGateway,
 		ConfigureMaster:             configureMaster,
 		ConfigureNode:               configureNode,
 		GetTemplateBox:              getTemplateBox,
 		GetGlobalSystemRequirements: getGlobalSystemRequirements,
 		GetNodeInstallationScript:   getNodeInstallationScript,
+		GetState:                    getState,
 	}
 )
 
@@ -98,27 +98,42 @@ func minimumRequiredServers(task concurrency.Task, foreman control.Foreman) (int
 	return masterCount, privateNodeCount, 0
 }
 
-func gatewaySizing(task concurrency.Task, foreman control.Foreman) resources.HostDefinition {
-	return resources.HostDefinition{
-		Cores:    2,
-		RAMSize:  15.0,
-		DiskSize: 60,
+func gatewaySizing(task concurrency.Task, foreman control.Foreman) pb.HostDefinition {
+	return pb.HostDefinition{
+		Sizing: &pb.HostSizing{
+			MinCpuCount: 2,
+			MaxCpuCount: 4,
+			MinRamSize:  7.0,
+			MaxRamSize:  16.0,
+			MinDiskSize: 50,
+			GpuCount:    -1,
+		},
 	}
 }
 
-func masterSizing(task concurrency.Task, foreman control.Foreman) resources.HostDefinition {
-	return resources.HostDefinition{
-		Cores:    4,
-		RAMSize:  15.0,
-		DiskSize: 100,
+func masterSizing(task concurrency.Task, foreman control.Foreman) pb.HostDefinition {
+	return pb.HostDefinition{
+		Sizing: &pb.HostSizing{
+			MinCpuCount: 4,
+			MaxCpuCount: 8,
+			MinRamSize:  15.0,
+			MaxRamSize:  32.0,
+			MinDiskSize: 800,
+			GpuCount:    -1,
+		},
 	}
 }
 
-func nodeSizing(task concurrency.Task, foreman control.Foreman) resources.HostDefinition {
-	return resources.HostDefinition{
-		Cores:    4,
-		RAMSize:  15.0,
-		DiskSize: 100,
+func nodeSizing(task concurrency.Task, foreman control.Foreman) pb.HostDefinition {
+	return pb.HostDefinition{
+		Sizing: &pb.HostSizing{
+			MinCpuCount: 2,
+			MaxCpuCount: 4,
+			MinRamSize:  15.0,
+			MaxRamSize:  32.0,
+			MinDiskSize: 80,
+			GpuCount:    -1,
+		},
 	}
 }
 
@@ -185,14 +200,10 @@ func configureNode(task concurrency.Task, foreman control.Foreman, index int, ho
 }
 
 func getNodeInstallationScript(task concurrency.Task, foreman control.Foreman, hostType NodeType.Enum) (string, map[string]interface{}) {
-	data := map[string]interface{}{
-		"DCOSVersion": dcosVersion,
-	}
+	data := map[string]interface{}{}
 
 	var script string
 	switch hostType {
-	case NodeType.Gateway:
-		script = "dcos_prepare_bootstrap.sh"
 	case NodeType.Master:
 		script = "dcos_install_master.sh"
 	case NodeType.Node:
@@ -213,18 +224,22 @@ func configureGateway(task concurrency.Task, foreman control.Foreman) error {
 
 	var dnsServers []string
 	cluster := foreman.Cluster()
-	cfg, err := cluster.GetService(task).GetCfgOpts()
+	cfg, err := cluster.GetService(task).GetConfigurationOptions()
 	if err == nil {
 		dnsServers = cfg.GetSliceOfStrings("DNSList")
 	}
 	netCfg := cluster.GetNetworkConfig(task)
+	identity := cluster.GetIdentity(task)
 	data := map[string]interface{}{
-		"GlobalSystemRequirements": *globalSystemRequirements,
-		"BootstrapIP":              netCfg.GatewayIP,
-		"BootstrapPort":            bootstrapHTTPPort,
-		"ClusterName":              cluster.GetIdentity(task).Name,
-		"MasterIPs":                cluster.ListMasterIPs(task),
-		"DNSServerIPs":             dnsServers,
+		"reserved_CommonRequirements": globalSystemRequirements,
+		"BootstrapIP":                 netCfg.GatewayIP,
+		"BootstrapPort":               bootstrapHTTPPort,
+		"ClusterName":                 identity.Name,
+		"MasterIPs":                   cluster.ListMasterIPs(task),
+		"DNSServerIPs":                dnsServers,
+		"GatewayIP":                   netCfg.GatewayIP,
+		"SSHPrivateKey":               identity.Keypair.PrivateKey,
+		"SSHPublicKey":                identity.Keypair.PublicKey,
 	}
 	retcode, _, _, err := foreman.ExecuteScript(box, funcMap, "dcos_prepare_bootstrap.sh", data, netCfg.GatewayID)
 	if err != nil {
@@ -245,7 +260,6 @@ func configureGateway(task concurrency.Task, foreman control.Foreman) error {
 	return nil
 }
 
-// TODO: make templateBox an AtomicValue
 func getTemplateBox() (*rice.Box, error) {
 	anon := templateBox.Load()
 	if anon == nil {
@@ -262,25 +276,25 @@ func getTemplateBox() (*rice.Box, error) {
 
 // getGlobalSystemRequirements returns the string corresponding to the script dcos_install_requirements.sh
 // which installs common features (docker in particular)
-func getGlobalSystemRequirements(task concurrency.Task, foreman control.Foreman) (*string, error) {
+func getGlobalSystemRequirements(task concurrency.Task, foreman control.Foreman) (string, error) {
 	anon := globalSystemRequirementsContent.Load()
 	if anon == nil {
 		// find the rice.Box
 		box, err := getTemplateBox()
 		if err != nil {
-			return nil, err
+			return "", err
 		}
 
 		// get file contents as string
 		tmplString, err := box.String("dcos_install_requirements.sh")
 		if err != nil {
-			return nil, fmt.Errorf("error loading script template: %s", err.Error())
+			return "", fmt.Errorf("error loading script template: %s", err.Error())
 		}
 
 		// parse then execute the template
 		tmplPrepared, err := txttmpl.New("install_requirements").Funcs(template.MergeFuncs(funcMap, false)).Parse(tmplString)
 		if err != nil {
-			return nil, fmt.Errorf("error parsing script template: %s", err.Error())
+			return "", fmt.Errorf("error parsing script template: %s", err.Error())
 		}
 		dataBuffer := bytes.NewBufferString("")
 		cluster := foreman.Cluster()
@@ -293,13 +307,12 @@ func getGlobalSystemRequirements(task concurrency.Task, foreman control.Foreman)
 			"SSHPrivateKey": identity.Keypair.PrivateKey,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("error realizing script template: %s", err.Error())
+			return "", fmt.Errorf("error realizing script template: %s", err.Error())
 		}
-		result := dataBuffer.String()
-		globalSystemRequirementsContent.Store(&result)
+		globalSystemRequirementsContent.Store(dataBuffer.String())
 		anon = globalSystemRequirementsContent.Load()
 	}
-	return anon.(*string), nil
+	return anon.(string), nil
 }
 
 // getState returns the current state of the cluster
@@ -325,17 +338,15 @@ func getState(task concurrency.Task, foreman control.Foreman) (ClusterState.Enum
 
 	}
 	_, err = sshCfg.WaitServerReady("ready", utils.GetContextTimeout())
-	if err == nil {
-		if err != nil {
-			return ClusterState.Error, err
-		}
-		retcode, _, stderr, err = safescaleClt.Ssh.Run(masterID, cmd, client.DefaultConnectionTimeout, client.DefaultExecutionTimeout)
-		if err != nil {
-			log.Errorf("failed to run remote command to get cluster state: %v\n%s", err, stderr)
-			return ClusterState.Error, err
-		}
-		ran = true
+	if err != nil {
+		return ClusterState.Error, err
 	}
+	retcode, _, stderr, err = safescaleClt.Ssh.Run(masterID, cmd, client.DefaultConnectionTimeout, client.DefaultExecutionTimeout)
+	if err != nil {
+		log.Errorf("failed to run remote command to get cluster state: %v\n%s", err, stderr)
+		return ClusterState.Error, err
+	}
+	ran = true
 
 	if ran && retcode == 0 {
 		return ClusterState.Nominal, nil

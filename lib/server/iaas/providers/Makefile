@@ -3,7 +3,6 @@ GO?=go
 .PHONY:	clean generate vet
 
 generate:
-	@(cd aws && $(MAKE) $(@))
 	@(cd cloudferro && $(MAKE) $(@))
 	@(cd cloudwatt && $(MAKE) $(@))
 	@(cd flexibleengine && $(MAKE) $(@))
@@ -11,13 +10,13 @@ generate:
 	@(cd opentelekom && $(MAKE) $(@))
 	@(cd ovh && $(MAKE) $(@))
 	@(cd local && $(MAKE) $(@))
-	@(cd erbc && $(MAKE) $(@))
+	@(cd gcp && $(MAKE) $(@))
+	@(cd aws && $(MAKE) $(@))
 
 vet:
 	@$(GO) vet ./...
 
 clean:
-	@(cd aws && $(MAKE) $(@))
 	@(cd cloudferro && $(MAKE) $(@))
 	@(cd cloudwatt && $(MAKE) $(@))
 	@(cd flexibleengine && $(MAKE) $(@))
@@ -25,5 +24,6 @@ clean:
 	@(cd opentelekom && $(MAKE) $(@))
 	@(cd ovh && $(MAKE) $(@))
 	@(cd local && $(MAKE) $(@))
-	@(cd erbc && $(MAKE) $(@))
+	@(cd gcp && $(MAKE) $(@))
+	@(cd aws && $(MAKE) $(@))
 	@$(RM) ./mocks/*.go || true

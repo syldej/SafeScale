@@ -21,6 +21,8 @@ package userdata
 import (
 	"bytes"
 	"fmt"
+	"github.com/sirupsen/logrus"
+	"io/ioutil"
 	"os"
 	"strings"
 	"text/template"
@@ -35,7 +37,7 @@ import (
 
 // Content is the structure to apply to userdata.sh template
 type Content struct {
-	// BashLibrary contains the basj library
+	// BashLibrary contains the bash library
 	BashLibrary string
 	// Header is the bash header for scripts
 	Header string
@@ -60,7 +62,7 @@ type Content struct {
 	CIDR string
 	// GatewayIP is the IP of the gateway
 	GatewayIP string
-	// Password for the user safescale (for troubleshoot use, useable only in console)
+	// Password for the user safescale (for troubleshoot use, usable only in console)
 	Password string
 	// EmulatedPublicNet is a private network which is used to emulate a public one
 	EmulatedPublicNet string
@@ -75,6 +77,17 @@ var (
 	userdataPhase2Template *template.Template
 )
 
+func (c Content) OK() bool {
+	// FIXME Implement something later using validator framework
+	result := true
+	result = result && c.BashLibrary != ""
+	result = result && c.Header != ""
+	result = result && c.User != ""
+	result = result && c.PublicKey != ""
+	result = result && c.PrivateKey != ""
+	return result
+}
+
 // NewContent ...
 func NewContent() *Content {
 	return &Content{
@@ -83,7 +96,7 @@ func NewContent() *Content {
 }
 
 // Prepare prepares the initial configuration script executed by cloud compute resource
-func (ud *Content) Prepare(
+func (c *Content) Prepare(
 	options stacks.ConfigurationOptions, request resources.HostRequest, cidr string, defaultNetworkCIDR string,
 ) error {
 
@@ -94,6 +107,7 @@ func (ud *Content) Prepare(
 		useLayer3Networking = true
 		dnsList             []string
 		operatorUsername    string
+		useNATService       = false
 	)
 	if request.Password == "" {
 		password, err := utils.GeneratePassword(16)
@@ -111,6 +125,7 @@ func (ud *Content) Prepare(
 
 	// autoHostNetworkInterfaces = options.AutoHostNetworkInterfaces
 	useLayer3Networking = options.UseLayer3Networking
+	useNATService = options.UseNATService
 	operatorUsername = options.OperatorUsername
 	dnsList = options.DNSList
 	if len(dnsList) <= 0 {
@@ -130,31 +145,64 @@ func (ud *Content) Prepare(
 		}
 	}
 
-	ud.BashLibrary = bashLibrary
-	ud.Header = scriptHeader
-	ud.User = operatorUsername
-	ud.PublicKey = strings.Trim(request.KeyPair.PublicKey, "\n")
-	ud.PrivateKey = strings.Trim(request.KeyPair.PrivateKey, "\n")
+	c.BashLibrary = bashLibrary
+	c.Header = scriptHeader
+	c.User = operatorUsername
+	c.PublicKey = strings.Trim(request.KeyPair.PublicKey, "\n")
+	c.PrivateKey = strings.Trim(request.KeyPair.PrivateKey, "\n")
 	// ud.ConfIF = !autoHostNetworkInterfaces
-	ud.IsGateway = request.DefaultGateway == nil && request.Networks[0].Name != resources.SingleHostNetworkName && !useLayer3Networking
-	ud.AddGateway = !request.PublicIP && !useLayer3Networking && ip != ""
-	ud.DNSServers = dnsList
-	ud.CIDR = cidr
-	ud.GatewayIP = ip
-	ud.Password = request.Password
-	ud.EmulatedPublicNet = defaultNetworkCIDR
-	//ud.HostName = request.Name
+	c.IsGateway = request.DefaultGateway == nil && request.Networks[0].Name != resources.SingleHostNetworkName && !useLayer3Networking
+	c.AddGateway = !request.PublicIP && !useLayer3Networking && ip != "" && !useNATService
+	c.DNSServers = dnsList
+	c.CIDR = cidr
+	c.GatewayIP = ip
+	c.Password = request.Password
+	c.EmulatedPublicNet = defaultNetworkCIDR
+
+	if request.HostName != "" {
+		c.HostName = request.HostName
+	} else {
+		c.HostName = request.ResourceName
+	}
 
 	return nil
 }
 
 // Generate generates the script file corresponding to the phase
-func (ud *Content) Generate(phase string) ([]byte, error) {
+func (c *Content) Generate(phase string) ([]byte, error) {
 	var (
 		box    *rice.Box
 		result []byte
 		err    error
 	)
+
+	// DEV VAR
+	provider := ""
+	if suffixCandidate := os.Getenv("SAFESCALE_SCRIPT_FLAVOR"); suffixCandidate != "" {
+		if suffixCandidate != "" {
+			problems := false
+
+			box, err = rice.FindBox("../userdata/scripts")
+			if err != nil || box == nil {
+				problems = true
+			}
+
+			if !problems && box != nil {
+				_, err := box.String(fmt.Sprintf("userdata%s.phase1.sh", suffixCandidate))
+				problems = err != nil
+				_, err = box.String(fmt.Sprintf("userdata%s.phase2.sh", suffixCandidate))
+				problems = problems || (err != nil)
+
+				if !problems {
+					provider = fmt.Sprintf(".%s", suffixCandidate)
+				}
+			}
+
+			if problems {
+				logrus.Warnf("Ignoring script flavor [%s]", suffixCandidate)
+			}
+		}
+	}
 
 	switch phase {
 	case "phase1":
@@ -164,17 +212,17 @@ func (ud *Content) Generate(phase string) ([]byte, error) {
 				return nil, err
 			}
 
-			tmplString, err := box.String("userdata.phase1.sh")
+			tmplString, err := box.String(fmt.Sprintf("userdata%s.phase1.sh", provider))
 			if err != nil {
-				return nil, fmt.Errorf("error loading script template: %s", err.Error())
+				return nil, fmt.Errorf("error loading script template for phase1 : %s", err.Error())
 			}
 			userdataPhase1Template, err = template.New("userdata.phase1").Parse(tmplString)
 			if err != nil {
-				return nil, fmt.Errorf("error parsing script template: %s", err.Error())
+				return nil, fmt.Errorf("error parsing script template for phase 1 : %s", err.Error())
 			}
 		}
 		buf := bytes.NewBufferString("")
-		err = userdataPhase1Template.Execute(buf, ud)
+		err = userdataPhase1Template.Execute(buf, c)
 		if err != nil {
 			return nil, err
 		}
@@ -186,7 +234,7 @@ func (ud *Content) Generate(phase string) ([]byte, error) {
 				return nil, err
 			}
 
-			tmplString, err := box.String("userdata.phase2.sh")
+			tmplString, err := box.String(fmt.Sprintf("userdata%s.phase2.sh", provider))
 			if err != nil {
 				return nil, fmt.Errorf("error loading script template: %s", err.Error())
 			}
@@ -196,12 +244,12 @@ func (ud *Content) Generate(phase string) ([]byte, error) {
 			}
 		}
 		buf := bytes.NewBufferString("")
-		err = userdataPhase2Template.Execute(buf, ud)
+		err = userdataPhase2Template.Execute(buf, c)
 		if err != nil {
 			return nil, err
 		}
 		result = buf.Bytes()
-		for tagname, tagcontent := range ud.Tags[phase] {
+		for tagname, tagcontent := range c.Tags[phase] {
 			for _, str := range tagcontent {
 				bytes.Replace(result, []byte("#"+tagname), []byte(str+"\n\n#"+tagname), 1)
 			}
@@ -210,13 +258,22 @@ func (ud *Content) Generate(phase string) ([]byte, error) {
 		return nil, fmt.Errorf("phase '%s' not managed", phase)
 	}
 
+	if forensics := os.Getenv("SAFESCALE_FORENSICS"); forensics != "" {
+		_ = os.MkdirAll(utils.AbsPathify(fmt.Sprintf("$HOME/.safescale/forensics/%s", c.HostName)), 0777)
+		dumpName := utils.AbsPathify(fmt.Sprintf("$HOME/.safescale/forensics/%s/userdata-%s.sh", c.HostName, phase))
+		err = ioutil.WriteFile(dumpName, []byte(result), 0644)
+		if err != nil {
+			logrus.Warnf("[TRACE] Failure writing step info into %s", dumpName)
+		}
+	}
+
 	return result, nil
 }
 
 // AddInTag adds some useful code on the end of userdata.phase2.sh just before the end (on the label #insert_tag)
-func (ud Content) AddInTag(phase string, tagname string, content string) {
-	if _, ok := ud.Tags[phase]; !ok {
-		ud.Tags[tagname] = map[string][]string{}
+func (c Content) AddInTag(phase string, tagname string, content string) {
+	if _, ok := c.Tags[phase]; !ok {
+		c.Tags[tagname] = map[string][]string{}
 	}
-	ud.Tags[phase][tagname] = append(ud.Tags[phase][tagname], content)
+	c.Tags[phase][tagname] = append(c.Tags[phase][tagname], content)
 }

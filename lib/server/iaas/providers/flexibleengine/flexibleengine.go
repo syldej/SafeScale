@@ -18,9 +18,11 @@ package flexibleengine
 
 import (
 	"fmt"
-	"github.com/sirupsen/logrus"
 	"regexp"
 	"strings"
+
+	"github.com/asaskevich/govalidator"
+	"github.com/sirupsen/logrus"
 
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/objectstorage"
@@ -90,6 +92,7 @@ func (p *provider) Build(params map[string]interface{}) (providerapi.Provider, e
 	vpcName, _ := network["VPCName"].(string)
 	vpcCIDR, _ := network["VPCCIDR"].(string)
 	region, _ := compute["Region"].(string)
+	zone, _ := compute["AvailabilityZone"].(string)
 	operatorUsername := resources.DefaultUser
 	if operatorUsernameIf, ok := compute["OperatorUsername"]; ok {
 		operatorUsername = operatorUsernameIf.(string)
@@ -98,12 +101,6 @@ func (p *provider) Build(params map[string]interface{}) (providerapi.Provider, e
 			operatorUsername = resources.DefaultUser
 		}
 	}
-	whitelistTemplatePattern, _ := compute["WhitelistTemplateRegexp"].(string)
-	blacklistTemplatePattern, _ := compute["BlacklistTemplateRegexp"].(string)
-	whitelistImagePattern, _ := compute["WhitelistImageRegexp"].(string)
-	blacklistImagePattern, _ := compute["BlacklistImageRegexp"].(string)
-
-
 
 	authOptions := stacks.AuthenticationOptions{
 		IdentityEndpoint: identityEndpoint,
@@ -112,9 +109,20 @@ func (p *provider) Build(params map[string]interface{}) (providerapi.Provider, e
 		DomainName:       domainName,
 		ProjectID:        projectID,
 		Region:           region,
+		AvailabilityZone: zone,
 		AllowReauth:      true,
 		VPCName:          vpcName,
 		VPCCIDR:          vpcCIDR,
+	}
+
+	govalidator.TagMap["alphanumwithdashesandunderscores"] = govalidator.Validator(func(str string) bool {
+		rxp := regexp.MustCompile(stacks.AlphanumericWithDashesAndUnderscores)
+		return rxp.Match([]byte(str))
+	})
+
+	_, err := govalidator.ValidateStruct(authOptions)
+	if err != nil {
+		return nil, err
 	}
 
 	metadataBucketName, err := objectstorage.BuildMetadataBucketName("huaweicloud", region, domainName, projectID)
@@ -132,12 +140,10 @@ func (p *provider) Build(params map[string]interface{}) (providerapi.Provider, e
 		},
 		MetadataBucket:   metadataBucketName,
 		OperatorUsername: operatorUsername,
-		Customizations: map[string]string{
-			"WhitelistTemplateRegexp": whitelistTemplatePattern,
-			"BlacklistTemplateRegexp": blacklistTemplatePattern,
-			"WhitelistImageRegexp": whitelistImagePattern,
-			"BlacklistImageRegexp": blacklistImagePattern,
-		},
+		// WhitelistTemplateRegexp: whitelistTemplatePattern,
+		// BlacklistTemplateRegexp: blacklistTemplatePattern,
+		// WhitelistImageRegexp:    whitelistImagePattern,
+		// BlacklistImageRegexp:    blacklistImagePattern,
 	}
 
 	stack, err := huaweicloud.New(authOptions, cfgOptions)
@@ -148,6 +154,48 @@ func (p *provider) Build(params map[string]interface{}) (providerapi.Provider, e
 	if err != nil {
 		return nil, err
 	}
+
+	validRegions, err := stack.ListRegions()
+	if err != nil {
+		if len(validRegions) != 0 {
+			return nil, err
+		}
+	}
+	if len(validRegions) != 0 {
+		regionIsValidInput := false
+		for _, vr := range validRegions {
+			if region == vr {
+				regionIsValidInput = true
+			}
+		}
+		if !regionIsValidInput {
+			return nil, fmt.Errorf("invalid Region: '%s'", region)
+		}
+	}
+
+	validAvailabilityZones, err := stack.ListAvailabilityZones()
+	if err != nil {
+		if len(validAvailabilityZones) != 0 {
+			return nil, err
+		}
+	}
+
+	if len(validAvailabilityZones) != 0 {
+		var validZones []string
+		zoneIsValidInput := false
+		for az, valid := range validAvailabilityZones {
+			if valid {
+				if az == zone {
+					zoneIsValidInput = true
+				}
+				validZones = append(validZones, az)
+			}
+		}
+		if !zoneIsValidInput {
+			return nil, fmt.Errorf("invalid Availability zone: '%s', valid zones are %v", zone, validZones)
+		}
+	}
+
 	return &provider{Stack: stack}, nil
 }
 
@@ -172,7 +220,7 @@ func (p *provider) GetTemplate(id string) (*resources.HostTemplate, error) {
 // }
 
 func isS3Template(tpl resources.HostTemplate) bool {
- 	return strings.HasPrefix(strings.ToUpper(tpl.Name), "S3.")
+	return strings.HasPrefix(strings.ToUpper(tpl.Name), "S3.")
 }
 
 func templateFromWhite(regr string) templatefilters.Predicate {
@@ -218,7 +266,7 @@ func imageFromBlack(regr string) imagefilters.Predicate {
 // ListTemplates lists available host templates
 // Host templates are sorted using Dominant Resource Fairness Algorithm
 func (p *provider) ListTemplates(all bool) ([]resources.HostTemplate, error) {
-	allTemplates, err := p.Stack.ListTemplates(all)
+	allTemplates, err := p.Stack.ListTemplates()
 	if err != nil {
 		return nil, err
 	}
@@ -229,17 +277,7 @@ func (p *provider) ListTemplates(all bool) ([]resources.HostTemplate, error) {
 		tpls = append(tpls, tpl)
 	}
 
-	if all {
-	 	return tpls, nil
-	}
-
-	cfgopts := p.Stack.GetConfigurationOptions()
-
-	whiteFilterRegexp := cfgopts.Customizations["WhitelistTemplateRegexp"]
-	blackFilterRegexp := cfgopts.Customizations["BlacklistTemplateRegexp"]
-
-	templateFilter := templatefilters.NewFilter(templateFromWhite(whiteFilterRegexp)).And(templatefilters.NewFilter(templateFromBlack(blackFilterRegexp)).Not())
-	return templatefilters.FilterTemplates(tpls, templateFilter), nil
+	return tpls, nil
 }
 
 func isWindowsImage(image resources.Image) bool {
@@ -253,25 +291,20 @@ func isBMSImage(image resources.Image) bool {
 
 // ListImages lists available OS images
 func (p *provider) ListImages(all bool) ([]resources.Image, error) {
-	images, err := p.Stack.ListImages(all)
+	images, err := p.Stack.ListImages()
 	if err != nil {
 		return nil, err
 	}
-	if all {
-		return images, nil
+
+	if !all {
+		filter := imagefilters.NewFilter(isWindowsImage).Not().And(imagefilters.NewFilter(isBMSImage).Not())
+		images = imagefilters.FilterImages(images, filter)
 	}
-
-	cfgopts := p.Stack.GetConfigurationOptions()
-
-	whiteFilterRegexp := cfgopts.Customizations["WhitelistImageRegexp"]
-	blackFilterRegexp := cfgopts.Customizations["BlacklistImageRegexp"]
-
-	imageFilter := imagefilters.NewFilter(isWindowsImage).Not().And(imagefilters.NewFilter(isBMSImage).Not()).And(imagefilters.NewFilter(imageFromWhite(whiteFilterRegexp))).And(imagefilters.NewFilter(imageFromBlack(blackFilterRegexp)).Not())
-	return imagefilters.FilterImages(images, imageFilter), nil
+	return images, nil
 }
 
-// GetAuthOpts returns the auth options
-func (p *provider) GetAuthOpts() (providers.Config, error) {
+// GetAuthenticationOptions returns the auth options
+func (p *provider) GetAuthenticationOptions() (providers.Config, error) {
 	cfg := providers.ConfigMap{}
 
 	opts := p.Stack.GetAuthenticationOptions()
@@ -285,8 +318,8 @@ func (p *provider) GetAuthOpts() (providers.Config, error) {
 	return cfg, nil
 }
 
-// GetCfgOpts return configuration parameters
-func (p *provider) GetCfgOpts() (providers.Config, error) {
+// GetConfigurationOptions return configuration parameters
+func (p *provider) GetConfigurationOptions() (providers.Config, error) {
 	cfg := providers.ConfigMap{}
 
 	opts := p.Stack.GetConfigurationOptions()
@@ -296,7 +329,7 @@ func (p *provider) GetCfgOpts() (providers.Config, error) {
 	cfg.Set("DefaultImage", opts.DefaultImage)
 	cfg.Set("MetadataBucketName", opts.MetadataBucket)
 	cfg.Set("OperatorUsername", opts.OperatorUsername)
-	cfg.Set("Customizations", opts.Customizations)
+	// cfg.Set("Customizations", opts.Customizations)
 
 	return cfg, nil
 }

@@ -27,12 +27,15 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/urfave/cli"
 	log "github.com/sirupsen/logrus"
+	"github.com/urfave/cli"
 
+	"github.com/CS-SI/SafeScale/cli/safescale/commands"
 	"github.com/CS-SI/SafeScale/lib/client"
 	"github.com/CS-SI/SafeScale/lib/server/utils"
-	"github.com/CS-SI/SafeScale/cli/safescale/commands"
+
+	// Autoload embedded provider drivers
+	_ "github.com/CS-SI/SafeScale/lib/server"
 )
 
 func cleanup() {
@@ -136,8 +139,9 @@ func main() {
 	app.Commands = append(app.Commands, commands.BucketCmd)
 	sort.Sort(cli.CommandsByName(commands.BucketCmd.Subcommands))
 
-	app.Commands = append(app.Commands, commands.DataCmd)
-	sort.Sort(cli.CommandsByName(commands.DataCmd.Subcommands))
+	//VPL: data disabled, not ready
+	// app.Commands = append(app.Commands, commands.DataCmd)
+	// sort.Sort(cli.CommandsByName(commands.DataCmd.Subcommands))
 
 	app.Commands = append(app.Commands, commands.ShareCmd)
 	sort.Sort(cli.CommandsByName(commands.ShareCmd.Subcommands))

@@ -23,7 +23,7 @@ import (
 	pb "github.com/CS-SI/SafeScale/lib"
 	"github.com/CS-SI/SafeScale/lib/server/handlers"
 	"github.com/CS-SI/SafeScale/lib/server/utils"
-	google_protobuf "github.com/golang/protobuf/ptypes/empty"
+	protobuf "github.com/golang/protobuf/ptypes/empty"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -36,7 +36,7 @@ var ProcessManagerHandler = handlers.NewProcessManagerHandler
 type ProcessManagerListener struct{}
 
 // Stop specified process
-func (s *ProcessManagerListener) Stop(ctx context.Context, in *pb.ProcessDefinition) (*google_protobuf.Empty, error) {
+func (s *ProcessManagerListener) Stop(ctx context.Context, in *pb.ProcessDefinition) (*protobuf.Empty, error) {
 	log.Infof("Stop process called")
 
 	ctx, cancelFunc := context.WithCancel(ctx)
@@ -47,18 +47,18 @@ func (s *ProcessManagerListener) Stop(ctx context.Context, in *pb.ProcessDefinit
 
 	tenant := GetCurrentTenant()
 	if tenant == nil {
-		log.Info("Can't create share: no tenant set")
-		return nil, grpc.Errorf(codes.FailedPrecondition, "can't create share: no tenant set")
+		log.Info("Can't stop process: no tenant set")
+		return nil, grpc.Errorf(codes.FailedPrecondition, "Can't stop process: no tenant set")
 	}
 
 	handler := ProcessManagerHandler(tenant.Service)
 	handler.Stop(ctx, in.Uuid)
 
-	return &google_protobuf.Empty{}, nil
+	return &protobuf.Empty{}, nil
 }
 
 // List running process
-func (s *ProcessManagerListener) List(ctx context.Context, in *google_protobuf.Empty) (*pb.ProcessList, error) {
+func (s *ProcessManagerListener) List(ctx context.Context, in *protobuf.Empty) (*pb.ProcessList, error) {
 	log.Infof("List process called")
 
 	ctx, cancelFunc := context.WithCancel(ctx)
@@ -69,14 +69,14 @@ func (s *ProcessManagerListener) List(ctx context.Context, in *google_protobuf.E
 
 	tenant := GetCurrentTenant()
 	if tenant == nil {
-		log.Info("Can't create share: no tenant set")
-		return nil, grpc.Errorf(codes.FailedPrecondition, "can't create share: no tenant set")
+		log.Info("Can't list process : no tenant set")
+		return nil, grpc.Errorf(codes.FailedPrecondition, "Can't list process: no tenant set")
 	}
 
 	handler := ProcessManagerHandler(tenant.Service)
 	processMap, err := handler.List(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to list Process %s", err.Error())
+		return nil, fmt.Errorf("failed to list Process %s", err.Error())
 	}
 	var pbProcessList []*pb.ProcessDefinition
 	for uuid, info := range processMap {

@@ -31,6 +31,7 @@ import (
 	"github.com/CS-SI/SafeScale/lib/client"
 	"github.com/CS-SI/SafeScale/lib/server/cluster/api"
 	clusterpropsv1 "github.com/CS-SI/SafeScale/lib/server/cluster/control/properties/v1"
+	clusterpropsv2 "github.com/CS-SI/SafeScale/lib/server/cluster/control/properties/v2"
 	"github.com/CS-SI/SafeScale/lib/server/cluster/enums/ClusterState"
 	"github.com/CS-SI/SafeScale/lib/server/cluster/enums/NodeType"
 	"github.com/CS-SI/SafeScale/lib/server/cluster/enums/Property"
@@ -38,7 +39,7 @@ import (
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
 	"github.com/CS-SI/SafeScale/lib/server/install"
 	providermetadata "github.com/CS-SI/SafeScale/lib/server/metadata"
-	pbutils "github.com/CS-SI/SafeScale/lib/server/utils"
+	srvutils "github.com/CS-SI/SafeScale/lib/server/utils"
 	"github.com/CS-SI/SafeScale/lib/system"
 	"github.com/CS-SI/SafeScale/lib/utils"
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
@@ -65,15 +66,14 @@ var (
 
 // Makers ...
 type Makers struct {
-	MinimumRequiredServers      func(task concurrency.Task, b Foreman) (int, int, int)          // returns masterCount, pruvateNodeCount, publicNodeCount
-	DefaultGatewaySizing        func(task concurrency.Task, b Foreman) resources.HostDefinition // sizing of Gateway(s)
-	DefaultMasterSizing         func(task concurrency.Task, b Foreman) resources.HostDefinition // default sizing of master(s)
-	DefaultNodeSizing           func(task concurrency.Task, b Foreman) resources.HostDefinition // defailt sizing of node(s)
-	DefaultImage                func(task concurrency.Task, b Foreman) string                   // default image of server(s)
+	MinimumRequiredServers      func(task concurrency.Task, b Foreman) (int, int, int)   // returns masterCount, pruvateNodeCount, publicNodeCount
+	DefaultGatewaySizing        func(task concurrency.Task, b Foreman) pb.HostDefinition // sizing of Gateway(s)
+	DefaultMasterSizing         func(task concurrency.Task, b Foreman) pb.HostDefinition // default sizing of master(s)
+	DefaultNodeSizing           func(task concurrency.Task, b Foreman) pb.HostDefinition // defailt sizing of node(s)
+	DefaultImage                func(task concurrency.Task, b Foreman) string            // default image of server(s)
 	GetNodeInstallationScript   func(task concurrency.Task, b Foreman, nodeType NodeType.Enum) (string, map[string]interface{})
-	GetGlobalSystemRequirements func(task concurrency.Task, b Foreman) (*string, error)
+	GetGlobalSystemRequirements func(task concurrency.Task, b Foreman) (string, error)
 	GetTemplateBox              func() (*rice.Box, error)
-	InstallGateway              func(task concurrency.Task, b Foreman) error
 	ConfigureGateway            func(task concurrency.Task, b Foreman) error
 	CreateMaster                func(task concurrency.Task, b Foreman, index int) error
 	ConfigureMaster             func(task concurrency.Task, b Foreman, index int, pbHost *pb.Host) error
@@ -89,6 +89,8 @@ type Makers struct {
 	LeaveNodeFromCluster        func(task concurrency.Task, b Foreman, pbHost *pb.Host, selectedMaster string) error
 	GetState                    func(task concurrency.Task, b Foreman) (ClusterState.Enum, error)
 }
+
+//go:generate mockgen -destination=../mocks/mock_foreman.go -package=mocks github.com/CS-SI/SafeScale/lib/server/cluster/control Foreman
 
 // Foreman interface, exposes public method
 type Foreman interface {
@@ -134,7 +136,8 @@ func (b *foreman) ExecuteScript(
 	}
 	var cmd string
 
-	cmd = fmt.Sprintf("sudo bash %s; rc=$?; if [[ rc -eq 0 ]]; then rm %s; fi; exit $rc", path, path)
+	// cmd = fmt.Sprintf("sudo bash %s; rc=$?; if [[ rc -eq 0 ]]; then rm %s; fi; exit $rc", path, path)
+	cmd = fmt.Sprintf("sudo bash %s; rc=$?; exit $rc", path)
 
 	return client.New().Ssh.Run(hostID, cmd, client.DefaultConnectionTimeout, 2*utils.GetLongOperationTimeout())
 }
@@ -164,7 +167,7 @@ func (b *foreman) construct(task concurrency.Task, req Request) error {
 	// Determine default image
 	var imageID string
 	if req.NodesDef != nil {
-		imageID = req.NodesDef.ImageID
+		imageID = req.NodesDef.ImageId
 	}
 	if imageID == "" && b.makers.DefaultImage != nil {
 		imageID = b.makers.DefaultImage(task, b)
@@ -174,56 +177,72 @@ func (b *foreman) construct(task concurrency.Task, req Request) error {
 	}
 
 	// Determine Gateway sizing
-	gatewayDef := resources.HostDefinition{
-		Cores:     2,
-		RAMSize:   7.0,
-		DiskSize:  60,
-		ImageID:   imageID,
-		GPUNumber: -1,
-	}
+	var gatewaysDefault *pb.HostDefinition
 	if b.makers.DefaultGatewaySizing != nil {
-		gatewayDef = complementHostDefinition(&gatewayDef, b.makers.DefaultGatewaySizing(task, b))
+		gatewaysDefault = complementHostDefinition(nil, b.makers.DefaultGatewaySizing(task, b))
+	} else {
+		gatewaysDefault = &pb.HostDefinition{
+			Sizing: &pb.HostSizing{
+				MinCpuCount: 2,
+				MaxCpuCount: 4,
+				MinRamSize:  7.0,
+				MaxRamSize:  16.0,
+				MinDiskSize: 50,
+				GpuCount:    -1,
+			},
+		}
 	}
-	gatewayDef = complementHostDefinition(req.NodesDef, gatewayDef)
-	pbGatewayDef := *pbutils.ToPBGatewayDefinition(&gatewayDef)
+	gatewaysDefault.ImageId = imageID
+	gatewaysDef := complementHostDefinition(req.GatewaysDef, *gatewaysDefault)
 
 	// Determine master sizing
-	masterDef := resources.HostDefinition{
-		Cores:     4,
-		RAMSize:   15.0,
-		DiskSize:  100,
-		ImageID:   imageID,
-		GPUNumber: -1,
-	}
+	var mastersDefault *pb.HostDefinition
 	if b.makers.DefaultMasterSizing != nil {
-		masterDef = complementHostDefinition(&masterDef, b.makers.DefaultMasterSizing(task, b))
+		mastersDefault = complementHostDefinition(nil, b.makers.DefaultMasterSizing(task, b))
+	} else {
+		mastersDefault = &pb.HostDefinition{
+			Sizing: &pb.HostSizing{
+				MinCpuCount: 4,
+				MaxCpuCount: 8,
+				MinRamSize:  15.0,
+				MaxRamSize:  32.0,
+				MinDiskSize: 100,
+				GpuCount:    -1,
+			},
+		}
 	}
 	// Note: no way yet to define master sizing from cli...
-	masterDef = complementHostDefinition(req.NodesDef, masterDef)
-	pbMasterDef := *pbutils.ToPBHostDefinition(&masterDef)
+	mastersDefault.ImageId = imageID
+	mastersDef := complementHostDefinition(req.MastersDef, *mastersDefault)
 
 	// Determine node sizing
-	nodeDef := resources.HostDefinition{
-		Cores:     4,
-		RAMSize:   15.0,
-		DiskSize:  100,
-		ImageID:   imageID,
-		GPUNumber: -1,
-	}
+	var nodesDefault *pb.HostDefinition
 	if b.makers.DefaultNodeSizing != nil {
-		nodeDef = complementHostDefinition(&nodeDef, b.makers.DefaultNodeSizing(task, b))
+		nodesDefault = complementHostDefinition(nil, b.makers.DefaultNodeSizing(task, b))
+	} else {
+		nodesDefault = &pb.HostDefinition{
+			Sizing: &pb.HostSizing{
+				MinCpuCount: 4,
+				MaxCpuCount: 8,
+				MinRamSize:  15.0,
+				MaxRamSize:  32.0,
+				MinDiskSize: 100,
+				GpuCount:    -1,
+			},
+		}
 	}
-	nodeDef = complementHostDefinition(req.NodesDef, nodeDef)
-	pbNodeDef := *pbutils.ToPBHostDefinition(&nodeDef)
+	nodesDefault.ImageId = imageID
+	nodesDef := complementHostDefinition(req.NodesDef, *nodesDefault)
 
 	// Creates network
 	log.Debugf("[cluster %s] creating network 'net-%s'", req.Name, req.Name)
 	req.Name = strings.ToLower(req.Name)
 	networkName := "net-" + req.Name
+	sizing := srvutils.FromPBHostDefinitionToPBGatewayDefinition(*gatewaysDef)
 	def := pb.NetworkDefinition{
 		Name:    networkName,
 		Cidr:    req.CIDR,
-		Gateway: &pbGatewayDef,
+		Gateway: &sizing,
 	}
 	clientInstance := client.New()
 	clientNetwork := clientInstance.Network
@@ -304,12 +323,12 @@ func (b *foreman) construct(task concurrency.Task, req Request) error {
 
 	// Saves Cluster metadata
 	err = b.cluster.UpdateMetadata(task, func() error {
-		err := b.cluster.GetProperties(task).LockForWrite(Property.DefaultsV1).ThenUse(func(v interface{}) error {
-			defaultsV1 := v.(*clusterpropsv1.Defaults)
-			defaultsV1.GatewaySizing = gatewayDef
-			defaultsV1.MasterSizing = masterDef
-			defaultsV1.NodeSizing = nodeDef
-			defaultsV1.Image = imageID
+		err := b.cluster.GetProperties(task).LockForWrite(Property.DefaultsV2).ThenUse(func(v interface{}) error {
+			defaultsV2 := v.(*clusterpropsv2.Defaults)
+			defaultsV2.GatewaySizing = srvutils.FromPBHostSizing(*gatewaysDef.Sizing)
+			defaultsV2.MasterSizing = srvutils.FromPBHostSizing(*mastersDef.Sizing)
+			defaultsV2.NodeSizing = srvutils.FromPBHostSizing(*nodesDef.Sizing)
+			defaultsV2.Image = imageID
 			return nil
 		})
 		if err != nil {
@@ -359,37 +378,29 @@ func (b *foreman) construct(task concurrency.Task, req Request) error {
 
 	masterCount, privateNodeCount, _ := b.determineRequiredNodes(task)
 	var (
-		// gatewayCh          chan error
-		// mastersCh          chan error
-		// privateNodesCh     chan error
-		// publicNodesCh      chan error
 		gatewayStatus      error
 		mastersStatus      error
 		privateNodesStatus error
-		// publicNodesStatus  error
 	)
 
-	// Step 1: starts gateway installation and masters and nodes creation
-	// gatewayCh = make(chan error)
-	// go b.taskInstallGateway(pbutils.ToPBHost(gw), gatewayCh)
+	// Step 1: starts gateway installation plus masters creation plus nodes creation
 	gatewayTask := concurrency.NewTask(task, b.taskInstallGateway)
-	gatewayTask.Start(pbutils.ToPBHost(gw))
+	gatewayTask.Start(srvutils.ToPBHost(gw))
 
 	mastersTask := concurrency.NewTask(task, b.taskCreateMasters)
 	mastersTask.Start(map[string]interface{}{
 		"count":     masterCount,
-		"masterDef": pbMasterDef,
+		"masterDef": mastersDef,
 	})
 
 	privateNodesTask := concurrency.NewTask(task, b.taskCreateNodes)
 	privateNodesTask.Start(map[string]interface{}{
 		"count":   privateNodeCount,
 		"public":  false,
-		"nodeDef": pbNodeDef,
+		"nodeDef": nodesDef,
 	})
 
-	// Step 2: awaits master creations and gateway installation finish
-	// gatewayStatus = <-gatewayCh
+	// Step 2: awaits gateway installation end and masters installation end
 	gatewayTask.Wait()
 	gatewayStatus = gatewayTask.GetError()
 	mastersTask.Wait()
@@ -405,17 +416,20 @@ func (b *foreman) construct(task concurrency.Task, req Request) error {
 		}
 	}()
 
+	// Step 3: run (not start so no parallelism here) gateway configuration (needs MasterIPs so masters must be installed first)
 	if gatewayStatus == nil && mastersStatus == nil {
+		// Configure Gateway and waits for the result
 		gatewayTask = concurrency.NewTask(task, b.taskConfigureGateway)
-		gatewayStatus = gatewayTask.Run(pbutils.ToPBHost(gw))
+		gatewayStatus = gatewayTask.Run(srvutils.ToPBHost(gw))
 	}
 
-	// Step 5: configure masters
+	// Step 4: configure masters (if masters created successfully and gateway configure successfully)
 	if gatewayStatus == nil && mastersStatus == nil {
 		mastersTask = concurrency.NewTask(task, b.taskConfigureMasters)
 		mastersStatus = mastersTask.Run(nil)
 	}
 
+	// Step 5: awaits nodes creation
 	privateNodesTask.Wait()
 	privateNodesStatus = privateNodesTask.GetError()
 
@@ -433,20 +447,9 @@ func (b *foreman) construct(task concurrency.Task, req Request) error {
 
 	// Step 6: Starts nodes configuration, if all masters and nodes
 	// have been created and gateway has been configured with success
-	if gatewayStatus == nil && mastersStatus == nil {
-		if privateNodesStatus == nil {
-			// privateNodesCh = make(chan error)
-			// go b.taskConfigureNodes(false, privateNodesCh)
-			privateNodesTask = concurrency.NewTask(task, b.taskConfigureNodes)
-			privateNodesTask.Start(false)
-		}
-
-		if privateNodesStatus == nil {
-			// privateNodesStatus = <-privateNodesCh
-			privateNodesTask.Wait()
-			privateNodesStatus = privateNodesTask.GetError()
-		}
-
+	if gatewayStatus == nil && mastersStatus == nil && privateNodesStatus == nil {
+		privateNodesTask = concurrency.NewTask(task, b.taskConfigureNodes)
+		privateNodesStatus = privateNodesTask.Run(nil)
 	}
 
 	if gatewayStatus != nil {
@@ -478,43 +481,58 @@ func (b *foreman) construct(task concurrency.Task, req Request) error {
 }
 
 // complementHostDefinition complements req with default values if needed
-func complementHostDefinition(req *resources.HostDefinition, def resources.HostDefinition) resources.HostDefinition {
-	var finalDef resources.HostDefinition
+func complementHostDefinition(req *pb.HostDefinition, def pb.HostDefinition) *pb.HostDefinition {
+	var finalDef pb.HostDefinition
 	if req == nil {
 		finalDef = def
 	} else {
 		finalDef = *req
-		if finalDef.Cores <= 0 && def.Cores > 0 {
-			finalDef.Cores = def.Cores
+		finalDef.Sizing = &pb.HostSizing{}
+		*finalDef.Sizing = *req.Sizing
+
+		if def.Sizing.MinCpuCount > 0 && finalDef.Sizing.MinCpuCount == 0 {
+			finalDef.Sizing.MinCpuCount = def.Sizing.MinCpuCount
 		}
-		if finalDef.RAMSize <= 0.0 && def.RAMSize > 0.0 {
-			finalDef.RAMSize = def.RAMSize
+		if def.Sizing.MaxCpuCount > 0 && finalDef.Sizing.MaxCpuCount == 0 {
+			finalDef.Sizing.MaxCpuCount = def.Sizing.MaxCpuCount
 		}
-		if finalDef.DiskSize <= 0 && def.DiskSize > 0 {
-			finalDef.DiskSize = def.DiskSize
+		if def.Sizing.MinRamSize > 0.0 && finalDef.Sizing.MinRamSize == 0.0 {
+			finalDef.Sizing.MinRamSize = def.Sizing.MinRamSize
 		}
-		if finalDef.GPUNumber == 0 && def.GPUNumber != 0 {
-			finalDef.GPUNumber = def.GPUNumber
+		if def.Sizing.MaxRamSize > 0.0 && finalDef.Sizing.MaxRamSize == 0.0 {
+			finalDef.Sizing.MaxRamSize = def.Sizing.MaxRamSize
 		}
-		if finalDef.CPUFreq == 0 && def.CPUFreq > 0 {
-			finalDef.CPUFreq = def.CPUFreq
+		if def.Sizing.MinDiskSize > 0 && finalDef.Sizing.MinDiskSize == 0 {
+			finalDef.Sizing.MinDiskSize = def.Sizing.MinDiskSize
 		}
-		if finalDef.ImageID == "" {
-			finalDef.ImageID = def.ImageID
+		if finalDef.Sizing.GpuCount <= 0 && def.Sizing.GpuCount > 0 {
+			finalDef.Sizing.GpuCount = def.Sizing.GpuCount
+		}
+		if finalDef.Sizing.MinCpuFreq == 0 && def.Sizing.MinCpuFreq > 0 {
+			finalDef.Sizing.MinCpuFreq = def.Sizing.MinCpuFreq
+		}
+		if finalDef.ImageId == "" {
+			finalDef.ImageId = def.ImageId
 		}
 
-		if finalDef.Cores <= 0 {
-			finalDef.Cores = 4
+		if finalDef.Sizing.MinCpuCount <= 0 {
+			finalDef.Sizing.MinCpuCount = 2
 		}
-		if finalDef.RAMSize <= 0.0 {
-			finalDef.RAMSize = 15.0
+		if finalDef.Sizing.MaxCpuCount <= 0 {
+			finalDef.Sizing.MaxCpuCount = 4
 		}
-		if finalDef.DiskSize <= 0 {
-			finalDef.DiskSize = 100
+		if finalDef.Sizing.MinRamSize <= 0.0 {
+			finalDef.Sizing.MinRamSize = 7.0
+		}
+		if finalDef.Sizing.MaxRamSize <= 0.0 {
+			finalDef.Sizing.MaxRamSize = 16.0
+		}
+		if finalDef.Sizing.MinDiskSize <= 0 {
+			finalDef.Sizing.MinDiskSize = 50
 		}
 	}
 
-	return finalDef
+	return &finalDef
 }
 
 // GetState returns "actively" the current state of the cluster
@@ -579,7 +597,13 @@ func (b *foreman) configureCluster(task concurrency.Task) error {
 		}
 	}()
 
-	// Installs remotedesktop feature on all masters
+	// Installs reverseproxy feature on cluster (gateways)
+	err = b.installReverseProxy(task)
+	if err != nil {
+		return err
+	}
+
+	// Installs remotedesktop feature on cluster (all masters)
 	err = b.installRemoteDesktop(task)
 	if err != nil {
 		return err
@@ -629,7 +653,7 @@ func uploadTemplateToFile(
 		return "", fmt.Errorf("failed to realize template: %s", err.Error())
 	}
 	cmd := dataBuffer.String()
-	remotePath := pbutils.TempFolder + "/" + fileName
+	remotePath := srvutils.TempFolder + "/" + fileName
 
 	err = install.UploadStringToRemoteFile(cmd, host, remotePath, "", "", "")
 	if err != nil {
@@ -638,7 +662,7 @@ func uploadTemplateToFile(
 	return remotePath, nil
 }
 
-// configureNodesFromList ...
+// configureNodesFromList configures nodes from a list
 func (b *foreman) configureNodesFromList(task concurrency.Task, hosts []string) error {
 	log.Debugf("Configuring nodes...")
 
@@ -682,10 +706,13 @@ func (b *foreman) configureNodesFromList(task concurrency.Task, hosts []string) 
 	return nil
 }
 
-// joinNodesFromList ...
+// joinNodesFromList makes nodes from a list join the cluster
 func (b *foreman) joinNodesFromList(task concurrency.Task, hosts []string) error {
 	if b.makers.JoinNodeToCluster == nil {
-		return nil
+		// configure what has to be done cluster-wide
+		if b.makers.ConfigureCluster != nil {
+			return b.makers.ConfigureCluster(task, b)
+		}
 	}
 
 	log.Debugf("Joining nodes to cluster...")
@@ -707,7 +734,7 @@ func (b *foreman) joinNodesFromList(task concurrency.Task, hosts []string) error
 	return nil
 }
 
-// leaveMastersFromList ...
+// leaveMastersFromList makes masters from a list leave the cluster
 func (b *foreman) leaveMastersFromList(task concurrency.Task, public bool, hosts []string) error {
 	if b.makers.LeaveMasterFromCluster == nil {
 		return nil
@@ -732,7 +759,7 @@ func (b *foreman) leaveMastersFromList(task concurrency.Task, public bool, hosts
 	return nil
 }
 
-// leaveNodesFromList ...
+// leaveNodesFromList makes nodes from a list leave the cluster
 func (b *foreman) leaveNodesFromList(task concurrency.Task, hosts []string, selectedMasterID string) error {
 	if b.makers.LeaveNodeFromCluster == nil {
 		return nil
@@ -747,7 +774,7 @@ func (b *foreman) leaveNodesFromList(task concurrency.Task, hosts []string, sele
 		pbHost, err := clientHost.Inspect(hostID, client.DefaultExecutionTimeout)
 		if err != nil {
 			// If host seems deleted, consider leaving as a success
-			if _, ok := err.(resources.ErrResourceNotFound); ok {
+			if utils.IsNotFoundError(err) {
 				continue
 			}
 			return err
@@ -789,20 +816,23 @@ func (b *foreman) installNodeRequirements(task concurrency.Task, nodeType NodeTy
 			log.Errorf("[%s] system requirements installation failed: %v", hostLabel, err)
 			return err
 		}
-		globalSystemRequirements = *result
+		globalSystemRequirements = result
 	}
+	params["reserved_CommonRequirements"] = globalSystemRequirements
 
 	var dnsServers []string
-	cfg, err := b.cluster.GetService(task).GetCfgOpts()
+	cfg, err := b.cluster.GetService(task).GetConfigurationOptions()
 	if err == nil {
 		dnsServers = cfg.GetSliceOfStrings("DNSList")
 	}
 	identity := b.cluster.GetIdentity(task)
-	params["reserved_CommonRequirements"] = globalSystemRequirements
 	params["ClusterName"] = identity.Name
 	params["DNSServerIPs"] = dnsServers
 	params["MasterIPs"] = b.cluster.ListMasterIPs(task)
 	params["CladmPassword"] = identity.AdminPassword
+	netCfg := b.cluster.GetNetworkConfig(task)
+	params["GatewayIP"] = netCfg.GatewayIP
+	params["PublicIP"] = netCfg.PublicIP
 
 	retcode, _, _, err := b.ExecuteScript(box, funcMap, script, params, pbHost.Id)
 	if err != nil {
@@ -826,57 +856,12 @@ func (b *foreman) getNodeInstallationScript(task concurrency.Task, nodeType Node
 	return "", map[string]interface{}{}
 }
 
-// installRemoteDesktop installs feature remotedesktop on all masters of the cluster
-func (b *foreman) installRemoteDesktop(task concurrency.Task) error {
-	identity := b.cluster.GetIdentity(task)
-	clusterName := identity.Name
-
-	disabled := false
-	err := b.cluster.GetProperties(task).LockForRead(Property.FeaturesV1).ThenUse(func(v interface{}) error {
-		_, disabled = v.(*clusterpropsv1.Features).Disabled["remotedesktop"]
-		return nil
-	})
-	if err != nil {
-		log.Errorf("[cluster %s] failed to install 'remotedesktop' feature: %v", clusterName, err)
-		return err
-	}
-	if !disabled {
-		log.Debugf("[cluster %s] adding feature 'remotedesktop'", clusterName)
-
-		adminPassword := identity.AdminPassword
-		target := install.NewClusterTarget(task, b.cluster)
-
-		// Adds remotedesktop feature on master
-		feature, err := install.NewFeature(task, "remotedesktop")
-		if err != nil {
-			log.Debugf("[cluster %s] failed to instanciate feature 'remotedesktop': %s\n", clusterName, err.Error())
-			return err
-		}
-		results, err := feature.Add(target, install.Variables{
-			"Username": "cladm",
-			"Password": adminPassword,
-		}, install.Settings{})
-		if err != nil {
-			log.Errorf("[cluster %s] failed to add feature '%s': %s", clusterName, feature.DisplayName(), err.Error())
-			return err
-		}
-		if !results.Successful() {
-			msg := results.AllErrorMessages()
-			log.Errorf("[cluster %s] failed to add '%s' failed: %s\n", clusterName, feature.DisplayName(), msg)
-			return fmt.Errorf(msg)
-		}
-		log.Debugf("[cluster %s] feature '%s' added successfully", clusterName, feature.DisplayName())
-	}
-	return nil
-}
-
-// taskInstallGateway installs necessary components on the gateway
-// Designed to work in goroutine
-// func (b *Foreman) taskInstallGateway(pbGateway *pb.Host, done chan error) {
+// taskInstallGateway installs necessary components on one gateway
+// This function is intended to be call as a goroutine
 func (b *foreman) taskInstallGateway(tr concurrency.TaskRunner, params interface{}) {
 	pbGateway := params.(*pb.Host)
-	// log.Debugf(">>> safescale.server.cluster.control.foreman::taskInstallGateway(%s)", pbGateway.Name)
-	// defer log.Debugf("<<< safescale.server.cluster.control.foreman::taskInstallGateway(%s)", pbGateway.Name)
+	// log.Debugf(">>> lib.server.cluster.control.foreman::taskInstallGateway(%s)", pbGateway.Name)
+	// defer log.Debugf("<<< lib.server.cluster.control.foreman::taskInstallGateway(%s)", pbGateway.Name)
 
 	var err error
 	defer func() {
@@ -899,6 +884,18 @@ func (b *foreman) taskInstallGateway(tr concurrency.TaskRunner, params interface
 		return
 	}
 
+	// Installs docker and docker-compose on gateway
+	err = b.installDockerCompose(tr.Task(), pbGateway, hostLabel)
+	if err != nil {
+		return
+	}
+
+	// Configure docker in Swarm mode
+	//	err = b.configureDockerSwarm(tr.Task(), pbGateway, hostLabel)
+	//	if err != nil {
+	//		return
+	//	}
+
 	// Installs proxycache server on gateway (if not disabled)
 	err = b.installProxyCacheServer(tr.Task(), pbGateway, hostLabel)
 	if err != nil {
@@ -906,13 +903,7 @@ func (b *foreman) taskInstallGateway(tr concurrency.TaskRunner, params interface
 	}
 
 	// Installs requirements as defined by cluster Flavor (if it exists)
-	err = b.installNodeRequirements(tr.Task(), NodeType.Gateway, pbGateway, "gateway")
-	if err != nil {
-		return
-	}
-
-	// Installs reverseproxy
-	err = b.installReverseProxy(tr.Task(), pbGateway, hostLabel)
+	err = b.installNodeRequirements(tr.Task(), NodeType.Gateway, pbGateway, hostLabel)
 	if err != nil {
 		return
 	}
@@ -920,14 +911,26 @@ func (b *foreman) taskInstallGateway(tr concurrency.TaskRunner, params interface
 	log.Debugf("[%s] preparation successful", hostLabel)
 }
 
-// taskConfigureGateway prepares the gateway
-// Designed to work in goroutine
-// func (b *Foreman) taskConfigureGateway(gw *pb.Host, done chan error) {
+// configureDockerSwarm
+//func (b *foreman) configureDockerSwarm(task concurrency.Task, gw *pb.Host, hostLabel string) error {
+//	cmd := fmt.Sprintf("docker swarm init --advertise-addr %s", gw.GetPrivateIp())
+//	retcode, _, _, err := client.New().Ssh.Run(gw.Id, cmd, client.DefaultConnectionTimeout, 2*utils.GetLongOperationTimeout())
+//	if err != nil {
+//		return err
+//	}
+//	if retcode != 0 {
+//		return fmt.Errorf("failed to initialize docker swarm on '%s'", hostLabel)
+//	}
+//	return nil
+//}
+
+// taskConfigureGateway prepares one gateway
+// This function is intended to be call as a goroutine
 func (b *foreman) taskConfigureGateway(tr concurrency.TaskRunner, params interface{}) {
 	// Convert parameters
 	gw := params.(*pb.Host)
-	log.Debugf(">>> safescale.server.cluster.control.foreman::taskConfigureGateway(%s)", gw.Name)
-	defer log.Debugf("<<< safescale.server.cluster.control.foreman::taskConfigureGateway(%s)", gw.Name)
+	log.Debugf(">>> lib.server.cluster.control.foreman::taskConfigureGateway(%s)", gw.Name)
+	defer log.Debugf("<<< lib.server.cluster.control.foreman::taskConfigureGateway(%s)", gw.Name)
 
 	log.Debugf("[gateway] starting configuration...")
 
@@ -952,17 +955,16 @@ func (b *foreman) taskConfigureGateway(tr concurrency.TaskRunner, params interfa
 	log.Debugf("[gateway] configuration successful.")
 }
 
-// taskCreateMasters ...
-// Intended to be used as goroutine
-// func (b *Foreman) taskCreateMasters(count int, def pb.HostDefinition, done chan error) {
+// taskCreateMasters creates masters
+// This function is intended to be call as a goroutine
 func (b *foreman) taskCreateMasters(tr concurrency.TaskRunner, params interface{}) {
 	// Convert parameters
 	p := params.(map[string]interface{})
 	count := p["count"].(int)
-	def := p["masterDef"].(pb.HostDefinition)
+	def := p["masterDef"].(*pb.HostDefinition)
 
-	log.Debugf(">>> safescale.server.cluster.control.foreman::taskCreateMasters(%d)", count)
-	defer log.Debugf(">>> safescale.server.cluster.control.foreman::taskCreateMasters(%d)", count)
+	log.Debugf(">>> lib.server.cluster.control.foreman::taskCreateMasters(%d)", count)
+	defer log.Debugf(">>> lib.server.cluster.control.foreman::taskCreateMasters(%d)", count)
 
 	// defer task end based on err
 	var err error
@@ -1012,13 +1014,13 @@ func (b *foreman) taskCreateMasters(tr concurrency.TaskRunner, params interface{
 	log.Debugf("[cluster %s] masters creation successful.", clusterName)
 }
 
-// taskCreateMaster adds a master node
-// func (b *Foreman) taskCreateMaster(index int, def pb.HostDefinition, timeout time.Duration, done chan error) {
+// taskCreateMaster creates one master
+// This function is intended to be call as a goroutine
 func (b *foreman) taskCreateMaster(tr concurrency.TaskRunner, params interface{}) {
 	// Convert parameters
 	p := params.(map[string]interface{})
 	index := p["index"].(int)
-	def := p["masterDef"].(pb.HostDefinition)
+	def := p["masterDef"].(*pb.HostDefinition)
 	timeout := p["timeout"].(time.Duration)
 
 	log.Debugf(">>>{task %s} safescale.cluster.controller.foreman::taskCreateMaster(%d)", tr.ID(), index)
@@ -1037,56 +1039,76 @@ func (b *foreman) taskCreateMaster(tr concurrency.TaskRunner, params interface{}
 	hostLabel := fmt.Sprintf("master #%d", index)
 	log.Debugf("[%s] starting host resource creation...\n", hostLabel)
 
-	name, err := b.buildHostname(tr.Task(), "master", NodeType.Master)
+	hostDef := *def
+	hostDef.Name, err = b.buildHostname(tr.Task(), "master", NodeType.Master)
 	if err != nil {
 		log.Errorf("[%s] creation failed: %s\n", hostLabel, err.Error())
 		err = fmt.Errorf("failed to create '%s': %s", hostLabel, err.Error())
 		return
 	}
 
-	def.Network = b.cluster.GetNetworkConfig(tr.Task()).NetworkID
-	def.Public = false
-	def.Name = name
+	hostDef.Network = b.cluster.GetNetworkConfig(tr.Task()).NetworkID
+	hostDef.Public = false
 	clientHost := client.New().Host
-	pbHost, err := clientHost.Create(def, timeout)
+	pbHost, err := clientHost.Create(hostDef, timeout)
+	if pbHost != nil {
+		// Updates cluster metadata to keep track of created host, before testing if an error occurred during the creation
+		mErr := b.cluster.UpdateMetadata(tr.Task(), func() error {
+			// Locks for write the NodesV1 extension...
+			return b.cluster.GetProperties(tr.Task()).LockForWrite(Property.NodesV1).ThenUse(func(v interface{}) error {
+				nodesV1 := v.(*clusterpropsv1.Nodes)
+				// Update swarmCluster definition in Object Storage
+				node := &clusterpropsv1.Node{
+					ID:        pbHost.Id,
+					Name:      pbHost.Name,
+					PrivateIP: pbHost.PrivateIp,
+					PublicIP:  pbHost.PublicIp,
+				}
+				nodesV1.Masters = append(nodesV1.Masters, node)
+				return nil
+			})
+		})
+		if mErr != nil {
+			if err != nil {
+				log.Errorf("[%s] creation failed: %s", hostLabel, err.Error())
+				err = fmt.Errorf("failed to update Cluster metadata: %s", err.Error())
+			}
+			return
+		}
+	}
 	if err != nil {
 		err = client.DecorateError(err, "creation of host resource", false)
-		log.Errorf("[%s] host resource creation failed: %s", hostLabel, err.Error())
-		err = fmt.Errorf("failed to create '%s': %s", hostLabel, err.Error())
+		if err != nil {
+			log.Errorf("[%s] host resource creation failed: %s", hostLabel, err.Error())
+		}
+		if err != nil {
+			err = fmt.Errorf("failed to create '%s': %s", hostLabel, err.Error())
+		}
 		return
 	}
 	hostLabel = fmt.Sprintf("%s (%s)", hostLabel, pbHost.Name)
 	log.Debugf("[%s] host resource creation successful", hostLabel)
 
-	defer func() {
-		if err != nil {
-			derr := clientHost.Delete([]string{pbHost.Id}, timeout)
-			if derr != nil {
-				log.Errorf("failed to delete master after failure")
-			}
-		}
-	}()
-
-	err = b.cluster.UpdateMetadata(tr.Task(), func() error {
-		// Locks for write the NodesV1 extension...
-		return b.cluster.GetProperties(tr.Task()).LockForWrite(Property.NodesV1).ThenUse(func(v interface{}) error {
-			nodesV1 := v.(*clusterpropsv1.Nodes)
-			// Update swarmCluster definition in Object Storage
-			node := &clusterpropsv1.Node{
-				ID:        pbHost.Id,
-				Name:      pbHost.Name,
-				PrivateIP: pbHost.PrivateIp,
-				PublicIP:  pbHost.PublicIp,
-			}
-			nodesV1.Masters = append(nodesV1.Masters, node)
-			return nil
-		})
-	})
-	if err != nil {
-		log.Errorf("[%s] creation failed: %s", hostLabel, err.Error())
-		err = fmt.Errorf("failed to update Cluster metadata: %s", err.Error())
-		return
-	}
+	// err = b.cluster.UpdateMetadata(tr.Task(), func() error {
+	// 	// Locks for write the NodesV1 extension...
+	// 	return b.cluster.GetProperties(tr.Task()).LockForWrite(Property.NodesV1).ThenUse(func(v interface{}) error {
+	// 		nodesV1 := v.(*clusterpropsv1.Nodes)
+	// 		// Update swarmCluster definition in Object Storage
+	// 		node := &clusterpropsv1.Node{
+	// 			ID:        pbHost.Id,
+	// 			Name:      pbHost.Name,
+	// 			PrivateIP: pbHost.PrivateIp,
+	// 			PublicIP:  pbHost.PublicIp,
+	// 		}
+	// 		nodesV1.Masters = append(nodesV1.Masters, node)
+	// 		return nil
+	// 	})
+	// })
+	// if err != nil {
+	// 	log.Errorf("[%s] creation failed: %s", hostLabel, err.Error())
+	// 	err = fmt.Errorf("failed to update Cluster metadata: %s", err.Error())
+	// 	return
+	// }
 
 	err = b.installProxyCacheClient(tr.Task(), pbHost, hostLabel)
 	if err != nil {
@@ -1103,10 +1125,10 @@ func (b *foreman) taskCreateMaster(tr concurrency.TaskRunner, params interface{}
 }
 
 // taskConfigureMasters configure masters
-// func (b *Foreman) taskConfigureMasters(done chan error) {
+// This function is intended to be call as a goroutine
 func (b *foreman) taskConfigureMasters(tr concurrency.TaskRunner, params interface{}) {
-	log.Debugf(">>> safescale.server.cluster.control.Foreman::taskConfigureMasters()")
-	defer log.Debugf("<<< safescale.server.cluster.control.Foreman::taskConfigureMasters()")
+	log.Debugf(">>> lib.server.cluster.control.Foreman::taskConfigureMasters()")
+	defer log.Debugf("<<< lib.server.cluster.control.Foreman::taskConfigureMasters()")
 
 	// defer task end based on err
 	var err error
@@ -1157,16 +1179,16 @@ func (b *foreman) taskConfigureMasters(tr concurrency.TaskRunner, params interfa
 	log.Debugf("[cluster %s] Masters configuration successful.", b.cluster.Name)
 }
 
-// taskConfigureMaster configures master
-// func (b *Foreman) taskConfigureMaster(index int, pbHost *pb.Host, done chan error) {
+// taskConfigureMaster configures one master
+// This function is intended to be call as a goroutine
 func (b *foreman) taskConfigureMaster(tr concurrency.TaskRunner, params interface{}) {
 	// Convert params
 	p := params.(map[string]interface{})
 	index := p["index"].(int)
 	pbHost := p["host"].(*pb.Host)
 
-	log.Debugf(">>> safescale.server.cluster.control.Foreman::taskConfigureMaster(%d, %s)", index, pbHost.Name)
-	defer log.Debugf("<<< safescale.server.cluster.control.Foreman::taskConfigureMaster(%d, %s)", index, pbHost.Name)
+	log.Debugf(">>> lib.server.cluster.control.Foreman::taskConfigureMaster(%d, %s)", index, pbHost.Name)
+	defer log.Debugf("<<< lib.server.cluster.control.Foreman::taskConfigureMaster(%d, %s)", index, pbHost.Name)
 
 	// defer task end based on err
 	var err error
@@ -1181,8 +1203,8 @@ func (b *foreman) taskConfigureMaster(tr concurrency.TaskRunner, params interfac
 	hostLabel := fmt.Sprintf("master #%d (%s)", index, pbHost.Name)
 	log.Debugf("[%s] starting configuration...\n", hostLabel)
 
-	// install docker feature
-	err = b.installDocker(tr.Task(), pbHost, hostLabel)
+	// install docker and docker-compose feature
+	err = b.installDockerCompose(tr.Task(), pbHost, hostLabel)
 	if err != nil {
 		return
 	}
@@ -1195,16 +1217,17 @@ func (b *foreman) taskConfigureMaster(tr concurrency.TaskRunner, params interfac
 	log.Debugf("[%s] configuration successful.", hostLabel)
 }
 
-// func (b *Foreman) taskCreateNodes(count int, public bool, def pb.HostDefinition, done chan error) {
+// taskCreateNodes creates nodes
+// This function is intended to be call as a goroutine
 func (b *foreman) taskCreateNodes(tr concurrency.TaskRunner, params interface{}) {
 	// Convert params
 	p := params.(map[string]interface{})
 	count := p["count"].(int)
 	public := p["public"].(bool)
-	def := p["nodeDef"].(pb.HostDefinition)
+	def := p["nodeDef"].(*pb.HostDefinition)
 
-	log.Debugf(">>> safescale.server.cluster.control.Foreman::taskCreateNodes(%d, %v)", count, public)
-	defer log.Debugf("<<< safescale.server.cluster.control.Foreman::taskCreateNodes(%d, %v)", count, public)
+	log.Debugf(">>> lib.server.cluster.control.Foreman::taskCreateNodes(%d, %v)", count, public)
+	defer log.Debugf("<<< lib.server.cluster.control.Foreman::taskCreateNodes(%d, %v)", count, public)
 
 	// defer task end based on err
 	var err error
@@ -1259,11 +1282,11 @@ func (b *foreman) taskCreateNode(tr concurrency.TaskRunner, params interface{}) 
 	// Convert parameters
 	p := params.(map[string]interface{})
 	index := p["index"].(int)
-	def := p["nodeDef"].(pb.HostDefinition)
+	def := p["nodeDef"].(*pb.HostDefinition)
 	timeout := p["timeout"].(time.Duration)
 
-	log.Debugf(">>> safescale.server.cluster.control.Foreman::taskCreateNode(%d)", index)
-	defer log.Debugf("<<< safescale.server.cluster.control.Foreman::taskCreateNode(%d)", index)
+	log.Debugf(">>> lib.server.cluster.control.Foreman::taskCreateNode(%d)", index)
+	defer log.Debugf("<<< lib.server.cluster.control.Foreman::taskCreateNode(%d)", index)
 
 	if tr == nil {
 		panic("Invalid parameter 'tr': can't be ni!")
@@ -1283,61 +1306,80 @@ func (b *foreman) taskCreateNode(tr concurrency.TaskRunner, params interface{}) 
 	log.Debugf("[%s] starting host resource creation...", hostLabel)
 
 	// Create the host
-	def.Name, err = b.buildHostname(tr.Task(), "node", NodeType.Node)
+	hostDef := *def
+	hostDef.Name, err = b.buildHostname(tr.Task(), "node", NodeType.Node)
 	if err != nil {
 		log.Errorf("[%s] host resource creation failed: %s", hostLabel, err.Error())
 		return
 	}
-	def.Network = b.cluster.GetNetworkConfig(tr.Task()).NetworkID
+	hostDef.Network = b.cluster.GetNetworkConfig(tr.Task()).NetworkID
 	if timeout < utils.GetLongOperationTimeout() {
 		timeout = utils.GetLongOperationTimeout()
 	}
 
 	clientHost := client.New().Host
-	pbHost, err := clientHost.Create(def, timeout)
+	var node *clusterpropsv1.Node
+	pbHost, err := clientHost.Create(hostDef, timeout)
+	if pbHost != nil {
+		mErr := b.cluster.UpdateMetadata(tr.Task(), func() error {
+			// Locks for write the NodesV1 extension...
+			return b.cluster.GetProperties(tr.Task()).LockForWrite(Property.NodesV1).ThenUse(func(v interface{}) error {
+				nodesV1 := v.(*clusterpropsv1.Nodes)
+				// Registers the new Agent in the swarmCluster struct
+				node = &clusterpropsv1.Node{
+					ID:        pbHost.Id,
+					Name:      pbHost.Name,
+					PrivateIP: pbHost.PrivateIp,
+					PublicIP:  pbHost.PublicIp,
+				}
+				nodesV1.PrivateNodes = append(nodesV1.PrivateNodes, node)
+				return nil
+			})
+		})
+		if mErr != nil {
+			derr := clientHost.Delete([]string{pbHost.Id}, utils.GetLongOperationTimeout())
+			if derr != nil {
+				log.Errorf("failed to delete node after failure")
+			}
+			log.Errorf("[%s] creation failed: %s", hostLabel, mErr.Error())
+			err = fmt.Errorf("failed to create node: %s", mErr.Error())
+			return
+		}
+	}
 	if err != nil {
 		err = client.DecorateError(err, "creation of host resource", true)
-		log.Errorf("[%s] creation failed: %s", hostLabel, err.Error())
+		if err != nil {
+			log.Errorf("[%s] creation failed: %s", hostLabel, err.Error())
+		}
 		return
 	}
 	hostLabel = fmt.Sprintf("node #%d (%s)", index, pbHost.Name)
 	log.Debugf("[%s] host resource creation successful.", hostLabel)
 
-	var node *clusterpropsv1.Node
-	err = b.cluster.UpdateMetadata(tr.Task(), func() error {
-		// Locks for write the NodesV1 extension...
-		return b.cluster.GetProperties(tr.Task()).LockForWrite(Property.NodesV1).ThenUse(func(v interface{}) error {
-			nodesV1 := v.(*clusterpropsv1.Nodes)
-			// Registers the new Agent in the swarmCluster struct
-			node = &clusterpropsv1.Node{
-				ID:        pbHost.Id,
-				Name:      pbHost.Name,
-				PrivateIP: pbHost.PrivateIp,
-				PublicIP:  pbHost.PublicIp,
-			}
-			nodesV1.PrivateNodes = append(nodesV1.PrivateNodes, node)
-			return nil
-		})
-	})
-	if err != nil {
-		derr := clientHost.Delete([]string{pbHost.Id}, utils.GetLongOperationTimeout())
-		if derr != nil {
-			log.Errorf("failed to delete node after failure")
-		}
-		log.Errorf("[%s] creation failed: %s", hostLabel, err.Error())
-		err = fmt.Errorf("failed to create node: %s", err.Error())
-		return
-	}
-
-	// Starting from here, delete node from cluster if exiting with error
-	defer func() {
-		if err != nil {
-			derr := b.cluster.deleteNode(tr.Task(), node, "")
-			if derr != nil {
-				log.Errorf("failed to delete node after failure")
-			}
-		}
-	}()
+	// err = b.cluster.UpdateMetadata(tr.Task(), func() error {
+	// 	// Locks for write the NodesV1 extension...
+	// 	return b.cluster.GetProperties(tr.Task()).LockForWrite(Property.NodesV1).ThenUse(func(v interface{}) error {
+	// 		nodesV1 := v.(*clusterpropsv1.Nodes)
+	// 		// Registers the new Agent in the swarmCluster struct
+	// 		node = &clusterpropsv1.Node{
+	// 			ID:        pbHost.Id,
+	// 			Name:      pbHost.Name,
+	// 			PrivateIP: pbHost.PrivateIp,
+	// 			PublicIP:  pbHost.PublicIp,
+	// 		}
+	// 		nodesV1.PrivateNodes = append(nodesV1.PrivateNodes, node)
+	// 		return nil
+	// 	})
+	// })
+	// if err != nil {
+	// 	derr := clientHost.Delete([]string{pbHost.Id}, utils.GetLongOperationTimeout())
+	// 	if derr != nil {
+	// 		log.Errorf("failed to delete node after failure")
+	// 	}
+	// 	log.Errorf("[%s] creation failed: %s", hostLabel, err.Error())
+	// 	err = fmt.Errorf("failed to create node: %s", err.Error())
+	// 	return
+	// }
 
 	err = b.installProxyCacheClient(tr.Task(), pbHost, hostLabel)
 	if err != nil {
@@ -1353,18 +1395,13 @@ func (b *foreman) taskCreateNode(tr concurrency.TaskRunner, params interface{}) 
 	log.Debugf("[%s] host resource creation successful.", hostLabel)
 }
 
-// taskConfigureNodes ...
-// func (b *Foreman) taskConfigureNodes(public bool, done chan error) {
+// taskConfigureNodes configures nodes
+// This function is intended to be call as a goroutine
 func (b *foreman) taskConfigureNodes(tr concurrency.TaskRunner, params interface{}) {
-	// Convert parameters
-	public := params.(bool)
+	log.Debugf(">>> safescale.cluster.controller.Foreman::taskConfigureNodes()")
+	defer log.Debugf("<<< safescale.cluster.controller.Foreman::taskConfigureNodes()")
 
-	log.Debugf(">>> safescale.cluster.controller.Foreman::taskConfigureNodes(%v)", public)
-	defer log.Debugf("<<< safescale.cluster.controller.Foreman::taskConfigureNodes(%v)", public)
-
-	var (
-		err error
-	)
+	var err error
 
 	// defer task end based on err
 	defer func() {
@@ -1424,11 +1461,8 @@ func (b *foreman) taskConfigureNodes(tr concurrency.TaskRunner, params interface
 	log.Debugf("[cluster %s] nodes configuration successful.", clusterName)
 }
 
-// taskConfigureNode ...
-// func (b *Foreman) taskConfigureNode(
-// 	index int, pbHost *pb.Host, nodeType NodeType.Enum, nodeTypeStr string,
-// 	done chan error,
-// ) {
+// taskConfigureNode configure one node
+// This function is intended to be call as a goroutine
 func (b *foreman) taskConfigureNode(tr concurrency.TaskRunner, params interface{}) {
 	// Convert parameters
 	p := params.(map[string]interface{})
@@ -1451,8 +1485,8 @@ func (b *foreman) taskConfigureNode(tr concurrency.TaskRunner, params interface{
 	hostLabel := fmt.Sprintf("node #%d (%s)", index, pbHost.Name)
 	log.Debugf("[%s] starting configuration...", hostLabel)
 
-	// Docker installation is mandatory on all nodes
-	err = b.installDocker(tr.Task(), pbHost, hostLabel)
+	// Docker and docker-compose installation is mandatory on all nodes
+	err = b.installDockerCompose(tr.Task(), pbHost, hostLabel)
 	if err != nil {
 		return
 	}
@@ -1466,41 +1500,91 @@ func (b *foreman) taskConfigureNode(tr concurrency.TaskRunner, params interface{
 	log.Debugf("[%s] configuration successful.", hostLabel)
 }
 
-func (b *foreman) installReverseProxy(task concurrency.Task, pbHost *pb.Host, hostLabel string) error {
-	// Installs reverseproxy
+// Installs reverseproxy
+func (b *foreman) installReverseProxy(task concurrency.Task) error {
+	identity := b.cluster.GetIdentity(task)
+	clusterName := identity.Name
+
 	disabled := false
-	b.cluster.RLock(task)
 	err := b.cluster.GetProperties(task).LockForRead(Property.FeaturesV1).ThenUse(func(v interface{}) error {
-		_, disabled = v.(*clusterpropsv1.Features).Disabled["reverseproxy"]
+		_, disabled = v.(*clusterpropsv1.Features).Disabled["remotedesktop"]
+		if !disabled {
+			_, disabled = v.(*clusterpropsv1.Features).Disabled["reverseproxy"]
+		}
 		return nil
 	})
-	b.cluster.RUnlock(task)
 	if err != nil {
-		log.Debugf("[%s] adding feature 'reverseproxy'...", hostLabel)
-		log.Errorf("[%s] feature 'reverseproxy' installation failed: %s", hostLabel, err.Error())
+		log.Errorf("[cluster %s] failed to install  embedded feature 'kong4gateway': %v", clusterName, err)
 		return err
 	}
 	if !disabled {
-		log.Debugf("[%s] adding feature 'reverseproxy'...", hostLabel)
-		feature, err := install.NewFeature(task, "reverseproxy")
+		log.Debugf("[cluster %s] adding feature 'kong4gateway'", clusterName)
+		feat, err := install.NewEmbeddedFeature(task, "kong4gateway")
 		if err != nil {
-			msg := fmt.Sprintf("[%s] failed to prepare feature 'reverseproxy': %s", hostLabel, err.Error())
-			log.Errorf(msg)
-			return fmt.Errorf(msg)
+			if feat != nil {
+				log.Errorf("[cluster %s] failed to instanciate embedded feature '%s': %s\n", clusterName, feat.DisplayName(), err.Error())
+			}
+			return err
 		}
-		target := install.NewHostTarget(pbHost)
-		results, err := feature.Add(target, install.Variables{}, install.Settings{})
+		target := install.NewClusterTarget(task, b.cluster)
+		results, err := feat.Add(target, install.Variables{}, install.Settings{})
 		if err != nil {
-			msg := fmt.Sprintf("[%s] failed to install feature 'reverseproxy': %s", hostLabel, err.Error())
-			log.Errorf(msg)
-			return fmt.Errorf(msg)
+			log.Errorf("[cluster %s] failed to add embedded feature '%s': %s", clusterName, feat.DisplayName(), err.Error())
+			return err
 		}
 		if !results.Successful() {
-			msg := fmt.Sprintf("[%s] failed to install feature 'reverseproxy': %s", hostLabel, results.AllErrorMessages())
-			log.Errorf(msg)
+			msg := results.AllErrorMessages()
+			log.Errorf("[cluster %s] failed to add '%s' failed: %s\n", clusterName, feat.DisplayName(), msg)
 			return fmt.Errorf(msg)
 		}
-		log.Debugf("[%s] feature 'reverseproxy' addition successful.", hostLabel)
+		log.Debugf("[cluster %s] feature '%s' added successfully", clusterName, feat.DisplayName())
+	}
+	return nil
+}
+
+// installRemoteDesktop installs feature remotedesktop on all masters of the cluster
+func (b *foreman) installRemoteDesktop(task concurrency.Task) error {
+	identity := b.cluster.GetIdentity(task)
+	clusterName := identity.Name
+
+	disabled := false
+	err := b.cluster.GetProperties(task).LockForRead(Property.FeaturesV1).ThenUse(func(v interface{}) error {
+		_, disabled = v.(*clusterpropsv1.Features).Disabled["remotedesktop"]
+		if !disabled {
+			_, disabled = v.(*clusterpropsv1.Features).Disabled["reverseproxy"]
+		}
+		return nil
+	})
+	if err != nil {
+		log.Errorf("[cluster %s] failed to install 'remotedesktop' feature: %v", clusterName, err)
+		return err
+	}
+	if !disabled {
+		log.Debugf("[cluster %s] adding feature 'remotedesktop'", clusterName)
+
+		adminPassword := identity.AdminPassword
+		target := install.NewClusterTarget(task, b.cluster)
+
+		// Adds remotedesktop feature on master
+		feat, err := install.NewEmbeddedFeature(task, "remotedesktop")
+		if err != nil {
+			log.Errorf("[cluster %s] failed to instanciate feature 'remotedesktop': %s\n", clusterName, err.Error())
+			return err
+		}
+		results, err := feat.Add(target, install.Variables{
+			"Username": "cladm",
+			"Password": adminPassword,
+		}, install.Settings{})
+		if err != nil {
+			log.Errorf("[cluster %s] failed to add feature '%s': %s", clusterName, feat.DisplayName(), err.Error())
+			return err
+		}
+		if !results.Successful() {
+			msg := results.AllErrorMessages()
+			log.Errorf("[cluster %s] failed to add '%s' failed: %s\n", clusterName, feat.DisplayName(), msg)
+			return fmt.Errorf(msg)
+		}
+		log.Debugf("[cluster %s] feature '%s' added successfully", clusterName, feat.DisplayName())
 	}
 	return nil
 }
@@ -1559,13 +1643,13 @@ func (b *foreman) installProxyCacheServer(task concurrency.Task, pbHost *pb.Host
 	if !disabled {
 		log.Debugf("[%s] adding feature 'proxycache-server'...", hostLabel)
 
-		feature, err := install.NewFeature(task, "proxycache-server")
+		feat, err := install.NewEmbeddedFeature(task, "proxycache-server")
 		if err != nil {
 			log.Errorf("[%s] failed to prepare feature 'proxycache-server': %s", hostLabel, err.Error())
 			return fmt.Errorf("failed to install feature 'proxycache-server': %s", err.Error())
 		}
 		target := install.NewHostTarget(pbHost)
-		results, err := feature.Add(target, install.Variables{}, install.Settings{})
+		results, err := feat.Add(target, install.Variables{}, install.Settings{})
 		if err != nil {
 			log.Errorf("[%s] failed to install feature 'proxycache-server': %s", hostLabel, err.Error())
 			return fmt.Errorf("failed to install feature 'proxycache-server' on host '%s': %s", pbHost.Name, err.Error())
@@ -1579,25 +1663,25 @@ func (b *foreman) installProxyCacheServer(task concurrency.Task, pbHost *pb.Host
 	return nil
 }
 
-func (b *foreman) installDocker(task concurrency.Task, pbHost *pb.Host, hostLabel string) error {
-	// install docker feature
-	log.Debugf("[%s] adding feature 'docker'...\n", hostLabel)
-	feature, err := install.NewFeature(task, "docker")
+func (b *foreman) installDockerCompose(task concurrency.Task, pbHost *pb.Host, hostLabel string) error {
+	// install docker-compose (and docker) feature
+	log.Debugf("[%s] adding feature 'docker-compose'...\n", hostLabel)
+	feat, err := install.NewEmbeddedFeature(task, "docker-compose")
 	if err != nil {
-		log.Errorf("[%s] failed to prepare feature 'docker': %s", hostLabel, err.Error())
-		return fmt.Errorf("failed to add feature 'docker' on host '%s': %s", pbHost.Name, err.Error())
+		log.Errorf("[%s] failed to prepare feature 'docker-compose': %s", hostLabel, err.Error())
+		return fmt.Errorf("failed to add feature 'docker-compose' on host '%s': %s", pbHost.Name, err.Error())
 	}
-	results, err := feature.Add(install.NewHostTarget(pbHost), install.Variables{}, install.Settings{})
+	results, err := feat.Add(install.NewHostTarget(pbHost), install.Variables{}, install.Settings{})
 	if err != nil {
-		log.Errorf("[%s] failed to add feature 'docker': %s", hostLabel, err.Error())
-		return fmt.Errorf("failed to add feature 'docker' on host '%s': %s", pbHost.Name, err.Error())
+		log.Errorf("[%s] failed to add feature 'docker-compose': %s", hostLabel, err.Error())
+		return fmt.Errorf("failed to add feature 'docker-compose' on host '%s': %s", pbHost.Name, err.Error())
 	}
 	if !results.Successful() {
 		msg := results.AllErrorMessages()
-		log.Errorf("[%s] failed to add feature 'docker': %s", hostLabel, msg)
-		return fmt.Errorf("failed to add feature 'docker' on host '%s': %s", pbHost.Name, msg)
+		log.Errorf("[%s] failed to add feature 'docker-compose': %s", hostLabel, msg)
+		return fmt.Errorf("failed to add feature 'docker-compose' on host '%s': %s", pbHost.Name, msg)
 	}
-	log.Debugf("[%s] feature 'docker' addition successful.", hostLabel)
+	log.Debugf("[%s] feature 'docker-compose' addition successful.", hostLabel)
 	return nil
 }
 

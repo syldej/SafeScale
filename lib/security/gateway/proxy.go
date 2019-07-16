@@ -16,7 +16,7 @@ import (
 	"github.com/spf13/viper"
 	"golang.org/x/oauth2"
 
-	"github.com/CS-SI/SafeScale/security/model"
+	"github.com/CS-SI/SafeScale/lib/security/model"
 )
 
 var ctx = context.Background()
@@ -106,7 +106,7 @@ func getServiceURL(service, resource string) (*url.URL, error) {
 	da := model.NewDataAccess(cfg.DatabaseDialect, cfg.DatabaseDSN)
 	srv := da.GetServiceByName(service)
 	if srv == nil {
-		return nil, fmt.Errorf("No route define to serve resource %s from service %s", service, resource)
+		return nil, fmt.Errorf("no route define to serve resource %s from service %s", service, resource)
 	}
 	surl := strings.Join([]string{srv.BaseURL, resource}, "/")
 	return url.Parse(surl)
@@ -141,13 +141,13 @@ func httpProxyFunc(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	url, err := getServiceURL(info.service, info.resource)
+	proxyUrl, err := getServiceURL(info.service, info.resource)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
 		return
 	}
 
-	httpForward(w, r, url)
+	httpForward(w, r, proxyUrl)
 
 }
 
@@ -211,13 +211,13 @@ func wsProxyFunc(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	url, err := getServiceURL(info.service, info.resource)
+	theUrl, err := getServiceURL(info.service, info.resource)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
 		return
 	}
 	header := http.Header{}
-	cDest, _, err := websocket.DefaultDialer.Dial(url.String(), header)
+	cDest, _, err := websocket.DefaultDialer.Dial(theUrl.String(), header)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
 		return
@@ -250,17 +250,17 @@ type proxyConfig struct {
 	DatabaseDSN        string
 }
 
-func loadConfig() *proxyConfig {
+func loadConfig() (cfg *proxyConfig, err error) {
 	viper.SetConfigName("security")         // name of config file (without extension)
 	viper.AddConfigPath("/etc/safescale/")  // path to look for the config file in
 	viper.AddConfigPath("$HOME/.safescale") // call multiple times to add many search paths
 	viper.AddConfigPath(".")                // optionally look for config in the working directory
-	err := viper.ReadInConfig()             // Find and read the config file
+	err = viper.ReadInConfig()              // Find and read the config file
 	if err != nil {                         // Handle errors reading the config file
-		log.Fatal(fmt.Errorf("Fatal error reading config file: %s", err))
+		return nil, fmt.Errorf("fatal error reading config file: %s", err)
 	}
 
-	cfg := proxyConfig{
+	cfg = &proxyConfig{
 		OpenIDURL:          viper.GetString("openid-provider.URL"),
 		OpenIDClientID:     viper.GetString("openid-provider.client_id"),
 		OpenIDClientSecret: viper.GetString("openid-provider.client_secret"),
@@ -270,7 +270,8 @@ func loadConfig() *proxyConfig {
 		Certificate:        viper.GetString("encryption.certificate"),
 		PrivateKey:         viper.GetString("encryption.private_key"),
 	}
-	return &cfg
+
+	return cfg, nil
 }
 
 func (p *proxyConfig) EncryptionEnabled() bool {
@@ -282,15 +283,22 @@ func (p *proxyConfig) AuthenticationEnabled() bool {
 }
 
 //Start starts the security gateway
-func Start(bindingURL string) {
+func Start(bindingURL string, failure chan bool) {
 
-	cfg = loadConfig()
-
-	provider, err := oidc.NewProvider(ctx, cfg.OpenIDURL)
+	cfg, err := loadConfig()
+	failure <- (err != nil)
 
 	if err != nil {
-		log.Fatal(err)
+		log.Error(err)
+		return
 	}
+
+	provider, err := oidc.NewProvider(ctx, cfg.OpenIDURL)
+	if err != nil {
+		log.Error(err)
+		return
+	}
+
 	oidcConfig := &oidc.Config{
 		ClientID: cfg.OpenIDClientID,
 	}
@@ -308,6 +316,7 @@ func Start(bindingURL string) {
 
 	err = http.ListenAndServeTLS(bindingURL, cfg.Certificate, cfg.PrivateKey, proxify())
 	if err != nil {
-		log.Fatal("ListenAndServe: ", err)
+		log.Error("ListenAndServe: ", err)
+		return
 	}
 }
