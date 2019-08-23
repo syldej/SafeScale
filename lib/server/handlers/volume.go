@@ -19,6 +19,9 @@ package handlers
 import (
 	"context"
 	"fmt"
+	uuid "github.com/satori/go.uuid"
+	"math"
+	"strconv"
 	"strings"
 
 	mapset "github.com/deckarep/golang-set"
@@ -44,9 +47,11 @@ type VolumeAPI interface {
 	Delete(ctx context.Context, ref string) error
 	List(ctx context.Context, all bool) ([]resources.Volume, error)
 	Inspect(ctx context.Context, ref string) (*resources.Volume, map[string]*propsv1.HostLocalMount, error)
-	Create(ctx context.Context, name string, size int, speed VolumeSpeed.Enum) (*resources.Volume, error)
-	Attach(ctx context.Context, volume string, host string, path string, format string, doNotFormat bool) error
+	Create(ctx context.Context, name string, size int, speed VolumeSpeed.Enum, inLvm bool, vusize int) (*resources.Volume, error)
+	Attach(ctx context.Context, volume string, host string, path string, format string, doNotFormat bool) (string, error)
 	Detach(ctx context.Context, volume string, host string) error
+	Expand(ctx context.Context, volume string, host string, increment uint32, incrementType string) error
+	Shrink(ctx context.Context, volume string, host string, increment uint32, incrementType string) error
 }
 
 // VolumeHandler volume service
@@ -80,7 +85,7 @@ func (handler *VolumeHandler) List(ctx context.Context, all bool) ([]resources.V
 	return volumes, nil
 }
 
-// TODO At service level, ve need to log before returning, because it's the last chance to track the real issue in server side
+// IMPORTANT TODO At service level, ve need to log before returning, because it's the last chance to track the real issue in server side
 
 // Delete deletes volume referenced by ref
 func (handler *VolumeHandler) Delete(ctx context.Context, ref string) error {
@@ -112,22 +117,57 @@ func (handler *VolumeHandler) Delete(ctx context.Context, ref string) error {
 		return err
 	}
 
-	err = handler.service.DeleteVolume(volume.ID)
-	if err != nil {
-		if _, ok := err.(resources.ErrResourceNotFound); !ok {
-			return infraErrf(err, "can't delete volume")
+	// FIXME Test volume deletion protection
+	if volume.ManagedByLVM {
+		if len(volume.PVM) == 0 {
+			return logicErr(fmt.Errorf("volume belongs to a Logical Volume, cannot be deleted"))
+		} else {
+			// FIXME Delete everything...
+			failures := false
+			for _, volumeId := range volume.PVM {
+				err = handler.service.DeleteVolume(volumeId.ID)
+				if err != nil {
+					log.Warnf("failure deleting volume %s", volumeId.ID)
+					failures = true
+				} else {
+					pmv, err := metadata.LoadVolume(handler.service, volumeId.Name)
+					if err != nil {
+						log.Warnf("failure loading metadata of volume %s", volumeId.ID)
+						failures = true
+					} else {
+						err = pmv.Delete()
+						if err != nil {
+							log.Warnf("failure deleting metadata of volume %s", volumeId.ID)
+							failures = true
+						}
+					}
+				}
+			}
+			if !failures {
+				delErr := mv.Delete()
+				return infraErr(delErr)
+			}
+
+			return logicErr(fmt.Errorf("There were some errors deleting the LVM %s, check the logs", ref))
 		}
-		log.Warnf("Unable to find the volume on provider side, cleaning up metadata")
-	}
-	err = mv.Delete()
-	if err != nil {
-		return infraErr(err)
+	} else { // Classic volumes
+		err = handler.service.DeleteVolume(volume.ID)
+		if err != nil {
+			if _, ok := err.(resources.ErrResourceNotFound); !ok {
+				return infraErrf(err, "can't delete volume")
+			}
+			log.Warnf("Unable to find the volume on provider side, cleaning up metadata")
+		}
+		err = mv.Delete()
+		if err != nil {
+			return infraErr(err)
+		}
 	}
 
 	select {
 	case <-ctx.Done():
 		log.Warnf("Volume deletion cancelled by user")
-		volumeBis, err := handler.Create(context.Background(), volume.Name, volume.Size, volume.Speed)
+		volumeBis, err := handler.Create(context.Background(), volume.Name, volume.Size, volume.Speed, volume.ManagedByLVM, volume.SizeVU)
 		if err != nil {
 			return fmt.Errorf("failed to stop volume deletion")
 		}
@@ -140,6 +180,23 @@ func (handler *VolumeHandler) Delete(ctx context.Context, ref string) error {
 	}
 
 	return nil
+}
+
+// Get returns the volume identified by ref, ref can be the name or the id
+func (handler *VolumeHandler) Get(ref string) (*resources.Volume, error) {
+	mv, err := metadata.LoadVolume(handler.service, ref)
+	if err != nil {
+		if _, ok := err.(utils.ErrNotFound); ok {
+			return nil, logicErr(resources.ResourceNotFoundError("volume", ref))
+		}
+		err := infraErr(err)
+		return nil, err
+	}
+	if mv == nil {
+		return nil, logicErr(resources.ResourceNotFoundError("volume", ref))
+	}
+
+	return mv.Get(), nil
 }
 
 // Inspect returns the volume identified by ref and its attachment (if any)
@@ -201,8 +258,78 @@ func (handler *VolumeHandler) Inspect(
 }
 
 // Create a volume
-func (handler *VolumeHandler) Create(ctx context.Context, name string, size int, speed VolumeSpeed.Enum) (*resources.Volume, error) {
-	volume, err := handler.service.CreateVolume(resources.VolumeRequest{
+func (handler *VolumeHandler) Create(ctx context.Context, name string, size int, speed VolumeSpeed.Enum, inLVM bool, sizeVU int) (volume *resources.Volume, err error) {
+	if inLVM {
+		if sizeVU <= 0 {
+			return nil, errors.New("VU size must be greater than 0")
+		}
+
+		numPVs := int(math.Ceil(float64(size) / float64(sizeVU)))
+		log.Debugf("Create volume : creating %d PVs for volume %s", numPVs, name)
+
+		var createdVolumes []*resources.Volume
+
+		defer func() {
+			if err != nil {
+				log.Debug("Create volume cleanup: volume creation cleanup needed")
+
+				for _, volToBeDeleted := range createdVolumes {
+					derr := handler.service.DeleteVolume(volToBeDeleted.ID)
+					log.Debugf("Create volume cleanup : volume deleted: %s", volToBeDeleted.Name)
+					if derr != nil {
+						log.Debugf("Create volume cleanup: failed to delete volume '%s': %v", volToBeDeleted.Name, derr)
+					}
+				}
+
+			}
+		}()
+
+		// create PV first
+		for subv := 0; subv < numPVs; subv++ {
+			volume, err := handler.service.CreateVolume(resources.VolumeRequest{
+				Name:   name + "_lvm_" + strconv.Itoa(subv),
+				Size:   sizeVU,
+				Speed:  speed,
+				InLVM:  inLVM,
+				SizeVU: sizeVU,
+			})
+
+			if err != nil {
+				return nil, infraErr(err)
+			}
+
+			volume.ManagedByLVM = true
+			createdVolumes = append(createdVolumes, volume)
+
+			_, err = metadata.SaveVolume(handler.service, volume)
+			if err != nil {
+				log.Debugf("Create volume: error creating volume: saving volume metadata: %+v", err)
+				return nil, infraErrf(err, "Create volume: error creating volume '%s' saving its volume metadata", name)
+			}
+		}
+
+		// now store VG info as metadata only
+		nvID, err := uuid.NewV4()
+		_ = nvID
+
+		nv := resources.NewVolume()
+		nv.Name = name
+		nv.Size = numPVs * sizeVU
+		nv.ID = nvID.String()
+
+		nv.ManagedByLVM = true
+		nv.PVM = createdVolumes
+
+		_, err = metadata.SaveVolume(handler.service, nv)
+		if err != nil {
+			log.Debugf("Create volume: error creating volume: saving volume metadata: %+v", err)
+			return nil, infraErrf(err, "Create volume: error creating volume '%s' saving its volume metadata", name)
+		}
+
+		return nv, nil
+	}
+
+	volume, err = handler.service.CreateVolume(resources.VolumeRequest{
 		Name:  name,
 		Size:  size,
 		Speed: speed,
@@ -245,22 +372,68 @@ func (handler *VolumeHandler) Create(ctx context.Context, name string, size int,
 	return volume, nil
 }
 
+func (handler *VolumeHandler) isAlreadyMounted(ctx context.Context, hostName string, volume *resources.Volume) (err error) {
+	// Get Host data
+	hostSvc := NewHostHandler(handler.service)
+	host, err := hostSvc.ForceInspect(ctx, hostName)
+	if err != nil {
+		return throwErr(err)
+	}
+
+	err = host.Properties.LockForRead(HostProperty.VolumesV1).ThenUse(func(v interface{}) error {
+		hostVolumesV1 := v.(*propsv1.HostVolumes)
+		// Check if the volume is already mounted elsewhere
+		if _, found := hostVolumesV1.DevicesByID[volume.ID]; found {
+			return logicErr(fmt.Errorf("volume '%s' is already attached in '%s'", volume.Name, host.Name))
+		}
+		return nil
+	})
+	if err != nil {
+		return infraErrf(err, "can't attach volume")
+	}
+
+	err = volume.Properties.LockForRead(VolumeProperty.AttachedV1).ThenUse(func(v interface{}) error {
+		volumeAttachedV1 := v.(*propsv1.VolumeAttachments)
+		if len(volumeAttachedV1.Hosts) > 0 {
+			return logicErr(fmt.Errorf("volume '%s' is already attached", volume.Name))
+		}
+		return nil
+	})
+	if err != nil {
+		return infraErrf(err, "can't get volume mount status")
+	}
+
+	return nil
+}
+
 // Attach a volume to an host
-func (handler *VolumeHandler) Attach(ctx context.Context, volumeName, hostName, path, format string, doNotFormat bool) error {
+func (handler *VolumeHandler) Attach(ctx context.Context, volumeName, hostName, path, format string, doNotFormat bool) (string, error) {
 	// Get volume data
 	volume, _, err := handler.Inspect(ctx, volumeName)
 	if err != nil {
 		if _, ok := err.(resources.ErrResourceNotFound); ok {
-			return err
+			return "", err
 		}
-		return infraErr(err)
+		return "", infraErr(err)
+	}
+
+	// FIXME Handle volume.Formatted
+	if volume.ManagedByLVM {
+		if len(volume.PVM) != 0 {
+			if volume.Formatted {
+				log.Debug("This should be managed by LVM and it's already formatted")
+			} else {
+				log.Debug("This should be managed by LVM")
+			}
+			return "", handler.attachLVM(ctx, volumeName, hostName, path, format, doNotFormat || volume.Formatted)
+		}
 	}
 
 	// Get Host data
 	hostSvc := NewHostHandler(handler.service)
 	host, err := hostSvc.ForceInspect(ctx, hostName)
 	if err != nil {
-		return throwErr(err)
+		return "", throwErr(err)
 	}
 
 	var (
@@ -391,6 +564,11 @@ func (handler *VolumeHandler) Attach(ctx context.Context, volumeName, hostName, 
 					return err
 				}
 
+				// Mark the volume as formatted
+				if !doNotFormat {
+					volume.Formatted = true
+				}
+
 				// Saves volume information in property
 				hostVolumesV1.VolumesByID[volume.ID] = &propsv1.HostVolume{
 					AttachID: vaID,
@@ -417,13 +595,14 @@ func (handler *VolumeHandler) Attach(ctx context.Context, volumeName, hostName, 
 					FileSystem: "nfs",
 				}
 				hostMountsV1.LocalMountsByDevice[volumeUUID] = mountPoint
+				log.Warnf("Storing in LocalMountsByDevice [%s], [%s]", volumeUUID, mountPoint)
 
 				return nil
 			})
 		})
 	})
 	if err != nil {
-		return infraErrf(err, "can't attach volume")
+		return "", infraErrf(err, "can't attach volume")
 	}
 
 	defer func() {
@@ -441,7 +620,7 @@ func (handler *VolumeHandler) Attach(ctx context.Context, volumeName, hostName, 
 
 	_, err = metadata.SaveVolume(handler.service, volume)
 	if err != nil {
-		return infraErrf(err, "can't attach volume")
+		return "", infraErrf(err, "can't attach volume")
 	}
 
 	defer func() {
@@ -463,7 +642,7 @@ func (handler *VolumeHandler) Attach(ctx context.Context, volumeName, hostName, 
 
 	mh, err := metadata.SaveHost(handler.service, host)
 	if err != nil {
-		return infraErrf(err, "can't attach volume")
+		return "", infraErrf(err, "can't attach volume")
 	}
 
 	defer func() {
@@ -498,19 +677,361 @@ func (handler *VolumeHandler) Attach(ctx context.Context, volumeName, hostName, 
 	case <-ctx.Done():
 		log.Warnf("Volume attachment cancelled by user")
 		err = fmt.Errorf("volume attachment cancelled by user")
-		return err
+		return "", err
 	default:
 	}
 
 	log.Infof("Volume '%s' successfully attached to host '%s' as device '%s'", volume.Name, host.Name, volumeUUID)
+	return deviceName, nil
+}
+
+func getHost(ctx context.Context, svc *VolumeHandler, hostName string) (*resources.Host, error) {
+	// Load host data
+	hostSvc := NewHostHandler(svc.service)
+	host, err := hostSvc.ForceInspect(ctx, hostName)
+	if err != nil {
+		return nil, throwErr(err)
+	}
+
+	return host, nil
+}
+
+func getHostVolume(ctx context.Context, svc *VolumeHandler, hostName string) (*propsv1.HostVolumes, error) {
+	// Load host data
+	hostSvc := NewHostHandler(svc.service)
+	host, err := hostSvc.ForceInspect(ctx, hostName)
+	if err != nil {
+		return nil, throwErr(err)
+	}
+
+	// Obtain volume attachment ID
+	var hostVolumesV1 *propsv1.HostVolumes
+	err = host.Properties.LockForRead(HostProperty.VolumesV1).ThenUse(func(v interface{}) error {
+		hostVolumesV1 = v.(*propsv1.HostVolumes)
+		return nil
+	})
+	if err != nil {
+		return nil, infraErr(err)
+	}
+
+	return hostVolumesV1, nil
+}
+
+func (svc *VolumeHandler) attachLVM(ctx context.Context, volumeName, hostName, path, format string, doNotFormat bool) (err error) {
+	// Get volume data
+	volume, err := svc.Get(volumeName)
+	if err != nil {
+		switch err.(type) {
+		case resources.ErrResourceNotFound:
+			return infraErr(err)
+		default:
+			return infraErr(err)
+		}
+	}
+
+	err = svc.isAlreadyMounted(ctx, hostName, volume)
+	if err != nil {
+		return throwErr(err)
+	}
+
+	var slicesAttachedSoFar []string
+
+	defer func() {
+		if err != nil {
+			if len(slicesAttachedSoFar) != 0 {
+				log.Debugln("attachLVM cleanup : detaching volumes after failure...")
+			}
+			for _, volSlice := range slicesAttachedSoFar {
+				nerr := svc.Detach(ctx, volSlice, hostName)
+				if nerr != nil {
+					log.Debugf("attachLVM cleanup : error detaching volume %s", volSlice)
+				}
+			}
+		}
+	}()
+
+	var deviceNames []string
+	for _, volumeSlice := range volume.PVM {
+		devName, err := svc.Attach(ctx, volumeSlice.Name, hostName, path, format, doNotFormat)
+		if err != nil {
+			return err
+		}
+
+		slicesAttachedSoFar = append(slicesAttachedSoFar, volumeSlice.Name)
+
+		if devName != "" {
+			deviceNames = append(deviceNames, devName)
+		}
+	}
+
+	// Get Host data
+	hostSvc := NewHostHandler(svc.service)
+	host, err := hostSvc.ForceInspect(ctx, hostName)
+	if err != nil {
+		return throwErr(err)
+	}
+
+	// Create mount point
+	sshHandler := NewSSHHandler(svc.service)
+	sshConfig, err := sshHandler.GetConfig(ctx, host.ID)
+	if err != nil {
+		return infraErr(err)
+	}
+
+	server, err := nfs.NewServer(sshConfig)
+	if err != nil {
+		return infraErr(err)
+	}
+
+	outInfo, err := server.MountVGDevice("", volumeName, format, doNotFormat, deviceNames)
+	if err != nil {
+		return infraErr(err)
+	}
+
+	if !doNotFormat {
+		var newIds []string
+
+		for _, line := range strings.Split(outInfo, "\n") {
+			if strings.HasPrefix(line, "SS:MOUNTED") {
+				newIds = append(newIds, strings.Split(line, ":")[2])
+			}
+		}
+
+		lvmId := newIds[len(newIds)-1]
+
+		mountPoint := path
+		if path == resources.DefaultVolumeMountPoint {
+			mountPoint = resources.DefaultVolumeMountPoint + volume.Name
+		}
+
+		// Updates volume properties
+		err = volume.Properties.LockForWrite(VolumeProperty.AttachedV1).ThenUse(func(v interface{}) error {
+			volumeAttachedV1 := v.(*propsv1.VolumeAttachments)
+			volumeAttachedV1.Hosts[host.ID] = host.Name
+			return nil
+		})
+		if err != nil {
+			return infraErrf(err, "can't attach volume")
+		}
+
+		for ind, volumeSlice := range volume.PVM {
+			cuvol, err := svc.Get(volumeSlice.Name)
+			if err != nil {
+				return infraErr(err)
+			}
+
+			log.Debugf("Working with volume with ID %s", volumeSlice.ID)
+			var previous string
+
+			err = host.Properties.LockForWrite(HostProperty.VolumesV1).ThenUse(func(v interface{}) error {
+				hostVolumesV1 := v.(*propsv1.HostVolumes)
+
+				previous = hostVolumesV1.DevicesByID[volumeSlice.ID]
+				log.Debugf("We should remove the local_mount_by_device with %s", previous)
+
+				delete(hostVolumesV1.DevicesByID, volume.ID)
+				log.Debugf("Updating UUID to %s", newIds[ind])
+				err = hostVolumesV1.UpdateUUID(cuvol.ID, newIds[ind])
+				if err != nil {
+					return infraErr(err)
+				}
+				return nil
+			})
+			if err != nil {
+				return infraErrf(err, "can't attach volume")
+			}
+
+			localMountPoint := mountPoint + "_lvm_" + strconv.Itoa(ind)
+			err = host.Properties.LockForWrite(HostProperty.MountsV1).ThenUse(func(v interface{}) error {
+				// Updates host properties
+				hostMountsV1 := v.(*propsv1.HostMounts)
+
+				hostMountsV1.LocalMountsByPath[localMountPoint] = &propsv1.HostLocalMount{
+					Device:     newIds[ind],
+					Path:       localMountPoint,
+					FileSystem: format,
+					Options:    "lvm",
+				}
+
+				delete(hostMountsV1.LocalMountsByDevice, previous)
+
+				hostMountsV1.LocalMountsByDevice[newIds[ind]] = mountPoint + "_lvm_" + strconv.Itoa(ind)
+				log.Warnf("Storing in LVM LocalMountsByDevice [%s], [%s]", newIds[ind], mountPoint+"_lvm_"+strconv.Itoa(ind))
+				return nil
+			})
+			if err != nil {
+				return infraErrf(err, "can't attach volume")
+			}
+
+			// FIXME Verfication
+			err = host.Properties.LockForRead(HostProperty.MountsV1).ThenUse(func(v interface{}) error {
+				// Updates host properties
+				hostMountsV1 := v.(*propsv1.HostMounts)
+				log.Warnf("Reading gives: %s", hostMountsV1.LocalMountsByPath[localMountPoint].Options)
+				return nil
+			})
+			if err != nil {
+				return infraErrf(err, "can't attach volume")
+			}
+
+			_, err = metadata.SaveHost(svc.service, host)
+			if err != nil {
+				return infraErrf(err, "can't attach volume")
+			}
+			// _ = sh.Write()
+		}
+
+		err = host.Properties.LockForWrite(HostProperty.VolumesV1).ThenUse(func(v interface{}) error {
+			hostVolumesV1 := v.(*propsv1.HostVolumes)
+			reset := volume.Name + "-" + host.Name
+			hostVolumesV1.AddHostVolume(volume.ID, volume.Name, reset, lvmId)
+			return nil
+		})
+		if err != nil {
+			return infraErrf(err, "can't attach volume")
+		}
+
+		// FIXME new attachment ID problematic
+
+		err = host.Properties.LockForWrite(HostProperty.MountsV1).ThenUse(func(v interface{}) error {
+			hostMountsV1 := v.(*propsv1.HostMounts)
+			// Updates host properties
+			hostMountsV1.LocalMountsByPath[mountPoint] = &propsv1.HostLocalMount{
+				Device:     lvmId,
+				Path:       mountPoint,
+				FileSystem: format,
+				Options:    "lvm",
+			}
+			hostMountsV1.LocalMountsByDevice[lvmId] = mountPoint
+			log.Warnf("Storing in LVM attachment LocalMountsByDevice [%s], [%s]", lvmId, mountPoint)
+			return nil
+		})
+		if err != nil {
+			return infraErrf(err, "can't attach volume")
+		}
+
+		_, err = metadata.SaveHost(svc.service, host)
+		if err != nil {
+			return infraErrf(err, "can't attach volume")
+		}
+
+		if !doNotFormat {
+			volume.Formatted = true
+		}
+
+		_, err = metadata.SaveVolume(svc.service, volume)
+		if err != nil {
+			return infraErrf(err, "can't attach volume")
+		}
+
+		log.Debugf("Recovered info: [%s]", outInfo)
+	} else {
+		var lvmId string
+
+		var newIds []string
+
+		for _, line := range strings.Split(outInfo, "\n") {
+			if strings.HasPrefix(line, "SS:MOUNTEDPV") {
+				newIds = append(newIds, strings.Split(line, ":")[2])
+			}
+			if strings.HasPrefix(line, "SS:MOUNTEDLV") {
+				lvmId = strings.Split(line, ":")[2]
+			}
+		}
+
+		err = host.Properties.LockForWrite(HostProperty.VolumesV1).ThenUse(func(v interface{}) error {
+			hostVolumesV1 := v.(*propsv1.HostVolumes)
+			reset := volume.Name + "-" + host.Name
+			hostVolumesV1.AddHostVolume(volume.ID, volume.Name, reset, lvmId)
+			return nil
+		})
+		if err != nil {
+			return infraErrf(err, "can't attach volume")
+		}
+
+		_, err = metadata.SaveHost(svc.service, host)
+		if err != nil {
+			return infraErrf(err, "can't attach volume")
+		}
+
+		err = volume.Properties.LockForWrite(VolumeProperty.AttachedV1).ThenUse(func(v interface{}) error {
+			volumeAttachedV1 := v.(*propsv1.VolumeAttachments)
+			// Updates volume properties
+			volumeAttachedV1.Hosts[host.ID] = host.Name
+			return nil
+		})
+		if err != nil {
+			return infraErrf(err, "can't attach volume")
+		}
+
+		_, err = metadata.SaveVolume(svc.service, volume)
+		if err != nil {
+			return infraErrf(err, "can't attach volume")
+		}
+
+		// FIXME use functions to handle structs
+
+		mountPoint := path
+		if path == resources.DefaultVolumeMountPoint {
+			mountPoint = resources.DefaultVolumeMountPoint + volume.Name
+		}
+
+		err = host.Properties.LockForWrite(HostProperty.MountsV1).ThenUse(func(v interface{}) error {
+			hostMountsV1 := v.(*propsv1.HostMounts)
+			for ind, volumeSlice := range volume.PVM {
+				cuvol, err := svc.Get(volumeSlice.Name)
+				if err != nil {
+					return infraErr(err)
+				}
+
+				err = host.Properties.LockForWrite(HostProperty.VolumesV1).ThenUse(func(w interface{}) error {
+					hostVolumesV1 := w.(*propsv1.HostVolumes)
+					err = hostVolumesV1.UpdateUUID(cuvol.ID, newIds[ind])
+					return err
+				})
+				if err != nil {
+					return infraErr(err)
+				}
+
+				// Updates host properties
+				hostMountsV1.LocalMountsByPath[mountPoint] = &propsv1.HostLocalMount{
+					Device:     newIds[ind],
+					Path:       mountPoint + "_lvm_" + strconv.Itoa(ind),
+					FileSystem: format,
+					Options:    "lvm",
+				}
+				hostMountsV1.LocalMountsByDevice[newIds[ind]] = mountPoint + "_lvm_" + strconv.Itoa(ind)
+			}
+
+			// Updates host properties
+			hostMountsV1.LocalMountsByPath[mountPoint] = &propsv1.HostLocalMount{
+				Device:     lvmId,
+				Path:       mountPoint,
+				FileSystem: format,
+				Options:    "lvm",
+			}
+			hostMountsV1.LocalMountsByDevice[lvmId] = mountPoint
+			return nil
+		})
+		if err != nil {
+			return infraErrf(err, "can't attach volume")
+		}
+
+		_, err = metadata.SaveHost(svc.service, host)
+		if err != nil {
+			return infraErrf(err, "can't attach volume")
+		}
+
+		return nil
+	}
+
 	return nil
 }
 
-func (handler *VolumeHandler) listAttachedDevices(ctx context.Context, host *resources.Host) (mapset.Set, error) {
+func (handler *VolumeHandler) listAttachedDevices(ctx context.Context, host *resources.Host) (set mapset.Set, err error) {
 	var (
 		retcode        int
 		stdout, stderr string
-		err            error
 	)
 	cmd := "sudo lsblk -l -o NAME,TYPE | grep disk | cut -d' ' -f1"
 	sshHandler := NewSSHHandler(handler.service)
@@ -535,11 +1056,400 @@ func (handler *VolumeHandler) listAttachedDevices(ctx context.Context, host *res
 		return nil, logicErrf(retryErr, fmt.Sprintf("failed to get list of connected disks after %s", utils.GetContextTimeout()))
 	}
 	disks := strings.Split(stdout, "\n")
-	set := mapset.NewThreadUnsafeSet()
+	set = mapset.NewThreadUnsafeSet()
 	for _, k := range disks {
 		set.Add(k)
 	}
 	return set, nil
+}
+
+func getServer(ctx context.Context, handler *VolumeHandler, hostName string) (*nfs.Server, error) {
+	// Get Host data
+	hostSvc := NewHostHandler(handler.service)
+	host, err := hostSvc.ForceInspect(ctx, hostName)
+	if err != nil {
+		return nil, infraErr(err)
+	}
+
+	sshHandler := NewSSHHandler(handler.service)
+	sshConfig, err := sshHandler.GetConfig(ctx, host.ID)
+	if err != nil {
+		return nil, logicErrf(err, "error getting ssh config")
+	}
+	server, err := nfs.NewServer(sshConfig)
+	if err != nil {
+		return nil, infraErr(err)
+	}
+
+	return server, nil
+}
+
+func getServerByID(ctx context.Context, handler *VolumeHandler, hostID string) (server *nfs.Server, err error) {
+	sshHandler := NewSSHHandler(handler.service)
+	sshConfig, err := sshHandler.GetConfig(ctx, hostID)
+	if err != nil {
+		return nil, logicErrf(err, "error getting ssh config")
+	}
+	server, err = nfs.NewServer(sshConfig)
+	if err != nil {
+		return nil, infraErr(err)
+	}
+
+	return server, nil
+}
+
+func getHostLocalMount(ctx context.Context, handler *VolumeHandler, volumeName, hostName string) (mount *propsv1.HostLocalMount, err error) {
+	// Get Host data
+	hostSvc := NewHostHandler(handler.service)
+	host, err := hostSvc.ForceInspect(ctx, hostName)
+	if err != nil {
+		return nil, throwErr(err)
+	}
+
+	volume, err := handler.Get(volumeName)
+	if err != nil {
+		switch err.(type) {
+		case resources.ErrResourceNotFound:
+			return nil, infraErr(err)
+		default:
+			return nil, infraErr(resources.ResourceNotFoundError("volume", volumeName))
+		}
+	}
+
+	var attachment *propsv1.HostVolume
+
+	// Obtain volume attachment ID
+	err = host.Properties.LockForRead(HostProperty.VolumesV1).ThenUse(func(v interface{}) error {
+		hostVolumesV1 := v.(*propsv1.HostVolumes)
+		att, found := hostVolumesV1.VolumesByID[volume.ID]
+		if !found {
+			return logicErr(fmt.Errorf("Can't detach volume '%s': not attached to host '%s'", volumeName, host.Name))
+		}
+		attachment = att
+		return nil
+	})
+	if err != nil {
+		return nil, infraErr(err)
+	}
+
+	// Obtain mounts information
+	err = host.Properties.LockForRead(HostProperty.MountsV1).ThenUse(func(v interface{}) error {
+		hostMountsV1 := v.(*propsv1.HostMounts)
+		device := attachment.Device
+		path := hostMountsV1.LocalMountsByDevice[device]
+		mount = hostMountsV1.LocalMountsByPath[path]
+		if mount == nil {
+			return logicErr(errors.Wrap(fmt.Errorf("metadata inconsistency: no mount corresponding to volume attachment"), ""))
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, infraErr(err)
+	}
+
+	return mount, nil
+}
+
+// Detach detach the volume identified by ref, ref can be the name or the id
+func (svc *VolumeHandler) Expand(ctx context.Context, volumeName, hostName string, increment uint32, incrementType string) (err error) {
+	// Load volume data
+	volume, err := svc.Get(volumeName)
+	if err != nil {
+		switch err.(type) {
+		case resources.ErrResourceNotFound:
+			return infraErr(err)
+		default:
+			return infraErr(resources.ResourceNotFoundError("volume", volumeName))
+		}
+	}
+
+	if !volume.ManagedByLVM {
+		return logicErr(fmt.Errorf("Standard volumes cannot be expanded"))
+	}
+
+	if len(volume.PVM) == 0 {
+		return logicErr(fmt.Errorf("Physical volumes cannot be expanded, only the volume group can be expanded"))
+	}
+
+	vuSize := volume.Size / len(volume.PVM)
+	valids := []string{"gb", "uv", "ratio"}
+	validChange := false
+	for _, item := range valids {
+		if incrementType == item {
+			validChange = true
+		}
+	}
+
+	// that should never happen, consider panicking instead
+	if !validChange {
+		return logicErr(fmt.Errorf("Unknown size parameter"))
+	}
+
+	nun := uint32(0)
+
+	if incrementType == "gb" {
+		nun = uint32(math.Ceil(float64(float64(increment) / float64(vuSize))))
+		log.Debugf("We have to create volumes of %d Gb, working with units of %d Gb size, %d volumes", increment, vuSize, nun)
+	}
+
+	if incrementType == "uv" {
+		nun = increment
+		log.Debugf("We have to add %d volumes of %d Gb each", increment, vuSize)
+	}
+
+	if incrementType == "ratio" {
+		targetVol := float64(volume.Size) * float64(increment) / (100 * float64(vuSize))
+		nun = uint32(math.Ceil(float64(targetVol)))
+		log.Debugf("After some maths, we need to add %d volumes of %d Gb each", nun, vuSize)
+	}
+
+	mountInfo, err := getHostLocalMount(ctx, svc, volumeName, hostName)
+	if err != nil {
+		return throwErr(err)
+	}
+	log.Debugf("Volume path [%s], filesystem [%s]", mountInfo.Path, mountInfo.FileSystem)
+
+	var deviceNames []string
+	var createdVolumes []*resources.Volume
+
+	defer func() {
+		if err != nil {
+			log.Debugf("Expand cleanup : cleaning volumes...")
+			for _, vol := range createdVolumes {
+				errRemovingVolume := svc.service.DeleteVolume(vol.ID)
+				if errRemovingVolume != nil {
+					log.Debugf("Expand cleanup : error removing volume: %s", errRemovingVolume.Error())
+				} else {
+					errorDeletingVolume := metadata.RemoveVolume(svc.service, vol.ID)
+					if errorDeletingVolume != nil {
+						log.Debugf("Expand cleanup : error removing volume metadata: %s", errorDeletingVolume.Error())
+					} else {
+						log.Debugf("Expand cleanup : cleaned volume %s", vol.Name)
+					}
+				}
+			}
+		}
+	}()
+
+	for tba := 0; tba < int(nun); tba++ {
+
+		newVolume, err := svc.service.CreateVolume(resources.VolumeRequest{
+			Name:   volume.Name + "_lvm_" + strconv.Itoa(len(volume.PVM)+tba),
+			Size:   vuSize,
+			Speed:  volume.Speed,
+			InLVM:  true,
+			SizeVU: vuSize,
+		})
+
+		if err != nil {
+			return infraErr(err)
+		}
+
+		newVolume.ManagedByLVM = true
+		createdVolumes = append(createdVolumes, newVolume)
+
+		_, err = metadata.SaveVolume(svc.service, newVolume)
+		if err != nil {
+			log.Debugf("Error creating volume: saving volume metadata: %+v", err)
+			return infraErrf(err, "Error creating volume '%s' saving its volume metadata", newVolume.Name)
+		}
+
+		devName, err := svc.Attach(ctx, newVolume.Name, hostName, mountInfo.Path+"_lvm_"+strconv.Itoa(len(volume.PVM)+tba), mountInfo.FileSystem, false)
+		if err != nil {
+			log.Debugf("Error attaching volume: %v", err.Error())
+			return err
+		}
+		if devName != "" {
+			deviceNames = append(deviceNames, devName)
+		}
+	}
+
+	server, err := getServer(ctx, svc, hostName)
+	if err != nil {
+		return throwErr(err)
+	}
+
+	// FIXME Use recovered info from string
+	_, err = server.ExpandVGDevice("", volumeName, mountInfo.FileSystem, false, deviceNames)
+	if err != nil {
+		return infraErr(err)
+	}
+
+	for _, addedVol := range createdVolumes {
+		volume.PVM = append(volume.PVM, addedVol)
+		volume.Size = volume.Size + addedVol.Size
+	}
+
+	_, err = metadata.SaveVolume(svc.service, volume)
+	if err != nil {
+		log.Debugf("Error creating volume: saving volume metadata: %+v", err)
+		return infraErrf(err, "Error creating volume '%s' saving its volume metadata", volume.Name)
+	}
+
+	return nil
+}
+
+// Detach detach the volume identified by ref, ref can be the name or the id
+func (svc *VolumeHandler) Shrink(ctx context.Context, volumeName, hostName string, increment uint32, incrementType string) (err error) {
+	// Load volume data
+	volume, err := svc.Get(volumeName)
+	if err != nil {
+		switch err.(type) {
+		case resources.ErrResourceNotFound:
+			return infraErr(err)
+		default:
+			return infraErr(resources.ResourceNotFoundError("volume", volumeName))
+		}
+	}
+
+	if !volume.ManagedByLVM {
+		return logicErr(fmt.Errorf("Standard volumes cannot be shrinked"))
+	}
+
+	if len(volume.PVM) == 0 {
+		return logicErr(fmt.Errorf("Physical volumes cannot be shrinked, only the group can be shrinked"))
+	}
+
+	vuSize := volume.Size / len(volume.PVM)
+	valids := []string{"gb", "uv", "ratio"}
+	validChange := false
+	for _, item := range valids {
+		if incrementType == item {
+			validChange = true
+		}
+	}
+
+	if !validChange {
+		return logicErr(fmt.Errorf("Unknown size parameter"))
+	}
+
+	numberOfVolumeUnitsAffected := uint32(0)
+	wantedSizeInGb := volume.Size
+
+	if incrementType == "gb" {
+		numberOfVolumeUnitsAffected = uint32(math.Ceil(float64(float64(increment) / float64(vuSize))))
+		log.Debugf("We have to remove volumes of %d Gb, working with units of %d Gb size, %d volumes", increment, vuSize, numberOfVolumeUnitsAffected)
+		wantedSizeInGb = wantedSizeInGb - int(increment)
+	}
+
+	if incrementType == "uv" {
+		numberOfVolumeUnitsAffected = increment
+		log.Debugf("We have to add %d volumes of %d Gb each", increment, vuSize)
+		wantedSizeInGb = wantedSizeInGb - (int(increment) * int(vuSize))
+	}
+
+	if incrementType == "ratio" {
+		targetVol := float64(volume.Size) * float64(increment) / (100 * float64(vuSize))
+		numberOfVolumeUnitsAffected = uint32(math.Ceil(float64(targetVol)))
+		wantedSizeInGb = wantedSizeInGb - int(float64(volume.Size)*float64(increment)/float64(100))
+	}
+
+	if incrementType == "" {
+		log.Debugf("Resize to a minimum by default")
+	}
+
+	log.Debugf("We have a target size from %d to %d Gb", volume.Size, wantedSizeInGb)
+
+	mountInfo, err := getHostLocalMount(ctx, svc, volumeName, hostName)
+	if err != nil {
+		return throwErr(err)
+	}
+	log.Debugf("Volume path [%s], filesystem [%s]", mountInfo.Path, mountInfo.FileSystem)
+
+	var deviceNames []string
+
+	server, err := getServer(ctx, svc, hostName)
+	if err != nil {
+		return throwErr(err)
+	}
+
+	shrinkOutput, err := server.ShrinkVGDevice("", volumeName, mountInfo.FileSystem, false, deviceNames, vuSize, wantedSizeInGb)
+	if err != nil {
+		if strings.Contains(shrinkOutput, "SS:FAILURE:") {
+			lines := strings.Split(shrinkOutput, "\n")
+			for _, line := range lines {
+				if strings.HasPrefix(line, "SS:FAILURE:") {
+					fragments := strings.Split(line, ":")
+					return infraErrf(err, fragments[2])
+				}
+			}
+
+		}
+		return infraErr(err)
+	}
+
+	// FIXME Rename structs
+	type smp struct {
+		uuid       string
+		mountpoint string
+	}
+
+	var points []smp
+
+	lines := strings.Split(shrinkOutput, "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "SS:DELETED:") {
+			log.Debugf("We had some shrink output: [%s]", line)
+			fragments := strings.Split(line, ":")
+			points = append(points, smp{uuid: fragments[2], mountpoint: fragments[3]})
+		}
+	}
+
+	host, err := getHost(ctx, svc, hostName)
+	if err != nil {
+		return throwErr(err)
+	}
+
+	hostVolumesV1, err := getHostVolume(ctx, svc, hostName)
+	if err != nil {
+		return throwErr(err)
+	}
+
+	for _, point := range points {
+		vod, ok := hostVolumesV1.VolumesByDevice[point.uuid]
+		if ok {
+			hovol := hostVolumesV1.VolumesByID[vod]
+			log.Debugf("We have to delete : [%s], attachment [%s]", hovol.Device, hovol.AttachID)
+			errRemovingAttachment := svc.service.DeleteVolumeAttachment(host.ID, hovol.AttachID)
+
+			failed := false
+			if errRemovingAttachment != nil {
+				failed = true
+				log.Debugf("Error removing volume attachment: %s", errRemovingAttachment.Error())
+			} else {
+				log.Debugf("Removed volume attachment [%s]", hovol.AttachID)
+			}
+			errRemovingVolume := svc.service.DeleteVolume(vod)
+			if errRemovingVolume != nil {
+				failed = true
+				log.Debugf("Error removing volume: %s", errRemovingVolume.Error())
+			} else {
+				log.Debugf("Removed volume [%s]", vod)
+			}
+
+			if !failed {
+				// update volume PVMs
+				var na []*resources.Volume
+				for _, v := range volume.PVM {
+					if v.ID == vod {
+						continue
+					} else {
+						na = append(na, v)
+					}
+				}
+				volume.PVM = na
+				volume.Size = volume.Size - vuSize
+			}
+		}
+	}
+
+	_, err = metadata.SaveVolume(svc.service, volume)
+	if err != nil {
+		log.Debugf("Error creating volume: saving volume metadata: %+v", err)
+		return infraErrf(err, "Error creating volume '%s' saving its volume metadata", volume.Name)
+	}
+
+	return nil
 }
 
 // Detach detach the volume identified by ref, ref can be the name or the id
@@ -553,6 +1463,15 @@ func (handler *VolumeHandler) Detach(ctx context.Context, volumeName, hostName s
 		return infraErr(resources.ResourceNotFoundError("volume", volumeName))
 	}
 	mountPath := ""
+
+	// FIXME Here goes PVM Managements
+
+	if volume.ManagedByLVM {
+		if len(volume.PVM) != 0 {
+			log.Debug("This should be managed by LVM")
+			return handler.detachLVM(ctx, volumeName, hostName)
+		}
+	}
 
 	// Load host data
 	hostSvc := NewHostHandler(handler.service)
@@ -623,6 +1542,7 @@ func (handler *VolumeHandler) Detach(ctx context.Context, volumeName, hostName s
 				}
 				err = nfsServer.UnmountBlockDevice(attachment.Device)
 				if err != nil {
+					// FIXME Warning here
 					_ = logicErrf(err, "error unmounting block device")
 					//return err
 				}
@@ -672,12 +1592,212 @@ func (handler *VolumeHandler) Detach(ctx context.Context, volumeName, hostName s
 	case <-ctx.Done():
 		log.Warnf("Volume detachment cancelled by user")
 		// Currently format is not registered anywhere so we use ext4 the most common format (but as we mount the volume the format parameter is ignored anyway)
-		err = handler.Attach(context.Background(), volumeName, hostName, mountPath, "ext4", true)
+		_, err = handler.Attach(context.Background(), volumeName, hostName, mountPath, "ext4", true)
 		if err != nil {
 			return fmt.Errorf("failed to stop volume detachment")
 		}
 		return fmt.Errorf("volume detachment canceld by user")
 	default:
+	}
+
+	return nil
+}
+
+func (handler *VolumeHandler) detachLVM(ctx context.Context, volumeName, hostName string) (err error) {
+	// Load volume data
+	volume, err := handler.Get(volumeName)
+	if err != nil {
+		switch err.(type) {
+		case resources.ErrResourceNotFound:
+			return infraErr(err)
+		default:
+			return infraErr(resources.ResourceNotFoundError("volume", volumeName))
+		}
+	}
+
+	// Load host data
+	hostSvc := NewHostHandler(handler.service)
+	host, err := hostSvc.ForceInspect(ctx, hostName)
+	if err != nil {
+		return throwErr(err)
+	}
+
+	// Obtain volume attachment ID
+	var hostVolumesV1 *propsv1.HostVolumes
+	err = host.Properties.LockForRead(HostProperty.VolumesV1).ThenUse(func(v interface{}) error {
+		hostVolumesV1 = v.(*propsv1.HostVolumes)
+		return nil
+	})
+	if err != nil {
+		return infraErr(err)
+	}
+
+	// FIXME Improve this part for LVM
+
+	// Check the volume is effectively attached
+	attachment, found := hostVolumesV1.VolumesByID[volume.ID]
+	if !found {
+		return logicErr(fmt.Errorf("Can't detach volume '%s': not attached to host '%s'", volumeName, host.Name))
+	}
+
+	var volumeAttachedV1 *propsv1.VolumeAttachments
+	err = volume.Properties.LockForRead(VolumeProperty.AttachedV1).ThenUse(func(v interface{}) error {
+		volumeAttachedV1 = v.(*propsv1.VolumeAttachments)
+		return nil
+	})
+	if err != nil {
+		return infraErrf(err, "can't get volume mount status")
+	}
+	if len(volumeAttachedV1.Hosts) == 0 {
+		return logicErr(fmt.Errorf("volume '%s' is already detached", volume.Name))
+	}
+
+	// Unmount the Block Device ...
+	sshHandler := NewSSHHandler(handler.service)
+	sshConfig, err := sshHandler.GetConfig(ctx, host.ID)
+	if err != nil {
+		return logicErrf(err, "error getting ssh config")
+	}
+	nfsServer, err := nfs.NewServer(sshConfig)
+	if err != nil {
+		return logicErrf(err, "error creating nfs service")
+	}
+	err = nfsServer.UnmountVGDevice(attachment.Device, volume.Name)
+	if err != nil {
+		return logicErrf(err, "error unmounting block device")
+	}
+
+	// FIXME Delete volume attachments of the children
+	for _, volumeSliceInfo := range volume.PVM {
+		volumeSlice, err := handler.Get(volumeSliceInfo.Name)
+		if err != nil {
+			switch err.(type) {
+			case resources.ErrResourceNotFound:
+				return infraErr(err)
+			default:
+				return infraErr(resources.ResourceNotFoundError("volume", volumeSliceInfo.Name))
+			}
+		}
+
+		// Check the volume is effectively attached
+		attachment, found := hostVolumesV1.VolumesByID[volumeSlice.ID]
+		if !found {
+			return logicErr(fmt.Errorf("Can't detach volume '%s': not attached to host '%s'", volumeName, host.Name))
+		}
+
+		log.Debugf("Host [%s] : Detaching subVolume with device [%s], attachId [%s]", host.Name, attachment.Device, attachment.AttachID)
+
+		var volumeAttachedV1 *propsv1.VolumeAttachments
+		err = volumeSlice.Properties.LockForRead(VolumeProperty.AttachedV1).ThenUse(func(v interface{}) error {
+			volumeAttachedV1 = v.(*propsv1.VolumeAttachments)
+			return nil
+		})
+		if err != nil {
+			return infraErrf(err, "can't get volume mount status")
+		}
+		if len(volumeAttachedV1.Hosts) == 0 {
+			return logicErr(fmt.Errorf("volume '%s' is already detached", volumeSlice.Name))
+		}
+
+		// ... then detach volume
+		err = handler.service.DeleteVolumeAttachment(host.ID, attachment.AttachID)
+		if err != nil {
+			return infraErr(err)
+		}
+
+		// update host information
+		err = host.Properties.LockForWrite(HostProperty.VolumesV1).ThenUse(func(v interface{}) error {
+			hostVolumesV1 = v.(*propsv1.HostVolumes)
+			// clean host data
+			hostVolumesV1.Delete(volumeSlice.ID, volumeSlice.Name, attachment.Device)
+			return nil
+		})
+		if err != nil {
+			return infraErr(err)
+		}
+		err = host.Properties.LockForWrite(HostProperty.MountsV1).ThenUse(func(v interface{}) error {
+			hostMountsV1 := v.(*propsv1.HostMounts)
+
+			// FIXME Maybe path requires some tweaking...
+			device := attachment.Device
+			path := hostMountsV1.LocalMountsByDevice[device]
+			mount := hostMountsV1.LocalMountsByPath[path]
+			if mount == nil {
+				return logicErr(errors.Wrap(fmt.Errorf("metadata inconsistency: no mount corresponding to volume attachment, device [%s], path [%s]", device, path), ""))
+			}
+
+			// Updates host property propsv1.MountsV1
+			delete(hostMountsV1.LocalMountsByDevice, mount.Device)
+			delete(hostMountsV1.LocalMountsByPath, mount.Path)
+			return nil
+		})
+		if err != nil {
+			return infraErr(err)
+		}
+
+		log.Debugf("Deleting LVM VAT %s", host.ID)
+		err = volume.Properties.LockForWrite(VolumeProperty.AttachedV1).ThenUse(func(v interface{}) error {
+			volumeAttachedV1 = v.(*propsv1.VolumeAttachments)
+			delete(volumeAttachedV1.Hosts, host.ID)
+			return nil
+		})
+		if err != nil {
+			return infraErr(err)
+		}
+
+		_, err = metadata.SaveVolume(handler.service, volume)
+		if err != nil {
+			return infraErr(err)
+		}
+
+		// Updates volume property propsv1.VolumeAttachments
+		log.Debugf("Deleting VAT %s", host.ID)
+		err = volumeSlice.Properties.LockForWrite(VolumeProperty.AttachedV1).ThenUse(func(v interface{}) error {
+			volumeAttachedV1 = v.(*propsv1.VolumeAttachments)
+			delete(volumeAttachedV1.Hosts, host.ID)
+			return nil
+		})
+		if err != nil {
+			return infraErr(err)
+		}
+
+		_, err = metadata.SaveVolume(handler.service, volumeSlice)
+		if err != nil {
+			return infraErr(err)
+		}
+	}
+
+	err = volume.Properties.LockForWrite(VolumeProperty.AttachedV1).ThenUse(func(v interface{}) error {
+		volumeAttachedV1 = v.(*propsv1.VolumeAttachments)
+		delete(volumeAttachedV1.Hosts, host.ID)
+		return nil
+	})
+	if err != nil {
+		return infraErrf(err, "can't attach volume")
+	}
+
+	err = host.Properties.LockForWrite(HostProperty.VolumesV1).ThenUse(func(v interface{}) error {
+		hostVolumesV1 = v.(*propsv1.HostVolumes)
+		// Updates host property propsv1.VolumesV1
+		delete(hostVolumesV1.VolumesByID, volume.ID)
+		delete(hostVolumesV1.VolumesByName, volume.Name)
+		delete(hostVolumesV1.VolumesByDevice, attachment.Device)
+		delete(hostVolumesV1.DevicesByID, volume.ID)
+		return nil
+	})
+	if err != nil {
+		return infraErrf(err, "can't attach volume")
+	}
+
+	// Updates metadata
+	_, err = metadata.SaveHost(handler.service, host)
+	if err != nil {
+		return infraErr(err)
+	}
+
+	_, err = metadata.SaveVolume(handler.service, volume)
+	if err != nil {
+		return infraErr(err)
 	}
 
 	return nil

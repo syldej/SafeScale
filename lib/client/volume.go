@@ -114,6 +114,31 @@ func (v *volume) Attach(def pb.VolumeAttachment, timeout time.Duration) error {
 
 }
 
+
+// Expand ...
+func (v *volume) Expand(def pb.VolumeSizeChange, timeout time.Duration) error {
+	v.session.Connect()
+	defer v.session.Disconnect()
+	service := pb.NewVolumeServiceClient(v.session.connection)
+	ctx := utils.GetContext(true)
+
+	_, err := service.Expand(ctx, &def)
+	return err
+
+}
+
+// Shrink ...
+func (v *volume) Shrink(def pb.VolumeSizeChange, timeout time.Duration) error {
+	v.session.Connect()
+	defer v.session.Disconnect()
+	service := pb.NewVolumeServiceClient(v.session.connection)
+	ctx := utils.GetContext(true)
+
+	_, err := service.Shrink(ctx, &def)
+	return err
+
+}
+
 // Detach ...
 func (v *volume) Detach(volumeName string, hostName string, timeout time.Duration) error {
 	v.session.Connect()

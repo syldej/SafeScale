@@ -15,9 +15,6 @@ service TenantService{
     rpc List (google.protobuf.Empty) returns (TenantList){}
     rpc Set (TenantName) returns (google.protobuf.Empty){}
     rpc Get (google.protobuf.Empty) returns (TenantName){}
-    rpc StorageList (google.protobuf.Empty) returns (TenantList){}
-    rpc StorageSet (TenantNameList) returns (google.protobuf.Empty){}
-    rpc StorageGet (google.protobuf.Empty) returns (TenantNameList){}
 }
 
 message Image{
@@ -35,10 +32,6 @@ message TenantName{
     string name = 1;
 }
 
-message TenantNameList{
-    repeated string names = 1;
-}
-
 message ImageList{
     repeated Image images= 1;
 }
@@ -51,59 +44,23 @@ service ImageService{
     rpc List(ImageListRequest) returns (ImageList){}
 }
 
-
-// safescale data ...
-
-message File {
-    string localPath = 1;
-    string name = 2;
-    string date = 3;
-    int64 size = 4;
-    repeated string buckets = 5;
-}
-
-message FileList {
-    repeated File files = 1;
-}
-
-service DataService{
-    rpc Push (File) returns (google.protobuf.Empty){}
-    rpc Get (File) returns (google.protobuf.Empty){}
-    rpc Delete (File) returns (google.protobuf.Empty){}
-    rpc List (google.protobuf.Empty) returns (FileList){}
-}
-
-
 // safescale network create net1 --cidr="192.145.0.0/16" --cpu=2 --ram=7 --disk=100 --os="Ubuntu 16.04" (par défault "192.168.0.0/24", on crée une gateway sur chaque réseau: gw_net1)
 // safescale network list
 // safescale network delete net1
 // safescale network inspect net1
 
-message VirtualIp {
-    string id = 1;
-    string name = 2;
-    string network_id = 3;
-    string private_ip = 4;
-    string public_ip = 5;
-    repeated Host hosts = 6;
-}
-
 message NetworkDefinition{
     string name = 2;
     string cidr = 3;
     GatewayDefinition gateway = 4;
-    bool fail_over = 5;
 }
 
 message GatewayDefinition{
-    int32 cpu = 1;  // Deprecated: replaced by sizing field
-    float ram = 2;  // Deprecated: replaced by sizing field
-    int32 disk = 3; // Deprecated: replaced by sizing field
+    int32 cpu = 1;
+    float ram = 2;
+    int32 disk = 3;
     string image_id = 5;
     string name = 6;
-    int32 gpu_count = 7;    // Deprecated: replaced by sizing field
-    string gpu_type = 8;    // Deprecated: replaced by sizing field
-    HostSizing sizing = 9;
 }
 
 message Network{
@@ -111,10 +68,8 @@ message Network{
     string name = 2;
     string cidr = 3;
     string gateway_id = 4;
-    string secondary_gateway_id = 5;
-    VirtualIp virtual_ip = 6;
-    bool failover = 7;
 }
+
 
 message NetworkList{
     repeated Network networks = 1;
@@ -135,43 +90,31 @@ service NetworkService{
 // safescale host inspect host1
 // safescale host create host2 --net="net1" --cpu=2 --ram=7 --disk=100 --os="Ubuntu 16.04" --public=false
 
-
-message HostSizing{
-    int32 min_cpu_count = 1;
-    int32 max_cpu_count = 2;
-    float min_ram_size = 3;
-    float max_ram_size = 4;
-    int32 min_disk_size = 5;
-    int32 gpu_count = 6;
-    float min_cpu_freq = 7;
-}
-
 message HostDefinition{
     string name = 2;
     string network = 3;
-    int32 cpu_count = 4;    // Deprecated: replaced by sizing field
-    float ram = 6;          // Deprecated: replaced by sizing field
-    int32 disk = 7;         // Deprecated: replaced by sizing field
+    int32 cpu_count = 4;
+    float ram = 6;
+    int32 disk = 7;
     string image_id = 9;
     bool public = 10;
-    int32 gpu_count = 11;   // Deprecated: replaced by sizing field
-    float cpu_freq = 12;    // Deprecated: replaced by sizing field
+    int32 gpu_count = 11;
+    float cpu_freq = 12;
     bool force = 13;
-    HostSizing sizing = 14;
 }
 
 enum HostState {
     /*STOPPED host is stopped*/
-	STOPPED = 0;
-	/*STARTING host is starting*/
+    STOPPED = 0;
+    /*STARTING host is starting*/
     STARTING = 1;
-	/*STARTED host is started*/
-	STARTED = 2;
-	/*STOPPING host is stopping*/
-	STOPPING = 3;
-	/*ERROR host is in error state*/
-	ERROR = 4;
-  }
+    /*STARTED host is started*/
+    STARTED = 2;
+    /*STOPPING host is stopping*/
+    STOPPING = 3;
+    /*ERROR host is in error state*/
+    ERROR = 4;
+}
 
 message Host{
     string id = 1;

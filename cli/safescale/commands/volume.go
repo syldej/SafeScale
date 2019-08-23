@@ -40,6 +40,8 @@ var VolumeCmd = cli.Command{
 		volumeCreate,
 		volumeAttach,
 		volumeDetach,
+		volumeExpand,
+		volumeShrink,
 	},
 }
 
@@ -119,6 +121,15 @@ var volumeCreate = cli.Command{
 			Value: "HDD",
 			Usage: fmt.Sprintf("Allowed values: %s", getAllowedSpeeds()),
 		},
+		cli.BoolFlag{
+			Name:  "resizable",
+			Usage: "Use volumes managed by LVM with a granularity defined by VUSize",
+		},
+		cli.IntFlag{
+			Name:  "vusize",
+			Value: 4,
+			Usage: "Size of each LVM Physical Drive (in Go)",
+		},
 	},
 	Action: func(c *cli.Context) error {
 		if c.NArg() != 1 {
@@ -136,9 +147,11 @@ var volumeCreate = cli.Command{
 			return clitools.FailureResponse(clitools.ExitOnInvalidOption(fmt.Sprintf("Invalid volume size '%d', should be at least 1", volSize)))
 		}
 		def := pb.VolumeDefinition{
-			Name:  c.Args().First(),
-			Size:  volSize,
-			Speed: pb.VolumeSpeed(volSpeed),
+			Name:   c.Args().First(),
+			Size:   int32(c.Int("size")),
+			Speed:  pb.VolumeSpeed(volSpeed),
+			InLVM:  c.Bool("resizable"),
+			VUSize: int32(c.Int("vusize")),
 		}
 
 		volume, err := client.New().Volume.Create(def, client.DefaultExecutionTimeout)
@@ -166,7 +179,7 @@ var volumeAttach = cli.Command{
 		},
 		cli.BoolFlag{
 			Name:  "do-not-format",
-			Usage: "Prevent the volume to be formated (the previous format of the disk will be kept, beware that a new volume has no format before his first attachment and so can't be attach with this option)",
+			Usage: "Prevent the volume to be formatted (the previous format of the disk will be kept, beware that a new volume has no format before his first attachment and so can't be attach with this option)",
 		},
 	},
 	Action: func(c *cli.Context) error {
@@ -189,6 +202,154 @@ var volumeAttach = cli.Command{
 	},
 }
 
+// splitter
+
+var volumeExpand = cli.Command{
+	Name:      "expand",
+	Usage:     "Expands a volume",
+	ArgsUsage: "<Volume_name|Volume_ID> <Host_name|Host_ID>",
+	Flags: []cli.Flag{
+		cli.IntFlag{
+			Name:  "uv",
+			Value: 0,
+			Usage: "Adds volumes of size Unit Volume",
+		},
+		cli.IntFlag{
+			Name:  "gb",
+			Value: 0,
+			Usage: "Adds Gb to VG",
+		},
+		cli.IntFlag{
+			Name:  "ratio",
+			Value: 0,
+			Usage: "Adds in %",
+		},
+	},
+	Action: func(c *cli.Context) error {
+		if c.NArg() != 2 {
+			_ = cli.ShowSubcommandHelp(c)
+			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Volume_name> and/or <Host_name>"))
+		}
+
+		def := pb.VolumeSizeChange{
+			PositiveChange: true,
+			VolumeName:     &pb.Reference{Name: c.Args().Get(0)},
+			HostName:       &pb.Reference{Name: c.Args().Get(1)},
+		}
+
+		def.ChangeSizeType = ""
+
+		if c.Uint("gb") > 0 {
+			def.ChangeSize = uint32(c.Uint("gb"))
+			def.ChangeSizeType = "gb"
+		}
+
+		if c.Uint("uv") > 0 {
+			if def.ChangeSizeType != "" {
+				return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Flags (gb, uv, ratio) are mutually exclusive, only one can be specified at a time"))
+			}
+
+			def.ChangeSize = uint32(c.Uint("uv"))
+			def.ChangeSizeType = "uv"
+		}
+
+		if c.Uint("ratio") > 0 {
+			if def.ChangeSizeType != "" {
+				return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Flags (gb, uv, ratio) are mutually exclusive, only one can be specified at a time"))
+			}
+
+			def.ChangeSize = uint32(c.Uint("ratio"))
+			def.ChangeSizeType = "ratio"
+		}
+
+		if def.ChangeSizeType == "" {
+			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("One flag required (gb, ub, ratio)"))
+		}
+
+		err := client.New().Volume.Expand(def, client.DefaultExecutionTimeout)
+		if err != nil {
+			return clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "attach of volume", true).Error()))
+		}
+		fmt.Printf("Volume '%s' expanded in host '%s'\n", c.Args().Get(0), c.Args().Get(1))
+		return nil
+	},
+}
+
+var volumeShrink = cli.Command{
+	Name:      "shrink",
+	Usage:     "Shrinks a volume",
+	ArgsUsage: "<Volume_name|Volume_ID> <Host_name|Host_ID>",
+	Flags: []cli.Flag{
+		cli.IntFlag{
+			Name:  "uv",
+			Value: 0,
+			Usage: "Removes volumes of size Unit Volume",
+		},
+		cli.IntFlag{
+			Name:  "gb",
+			Value: 0,
+			Usage: "Reduces Gb from VG",
+		},
+		cli.IntFlag{
+			Name:  "ratio",
+			Value: 0,
+			Usage: "Reduction in %",
+		},
+		cli.BoolFlag{
+			Name:  "auto",
+			Usage: "Resizes volume group to a minimum",
+		},
+	},
+	Action: func(c *cli.Context) error {
+		if c.NArg() != 2 {
+			_ = cli.ShowSubcommandHelp(c)
+			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Volume_name> and/or <Host_name>"))
+		}
+
+		def := pb.VolumeSizeChange{
+			PositiveChange: false,
+			VolumeName:     &pb.Reference{Name: c.Args().Get(0)},
+			HostName:       &pb.Reference{Name: c.Args().Get(1)},
+		}
+
+		def.ChangeSizeType = ""
+
+		if c.Uint("gb") > 0 {
+			def.ChangeSize = uint32(c.Uint("gb"))
+			def.ChangeSizeType = "gb"
+		}
+
+		if c.Uint("uv") > 0 {
+			if def.ChangeSizeType != "" {
+				return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Flags (gb, uv, ratio) are mutually exclusive, only one can be specified at a time"))
+			}
+
+			def.ChangeSize = uint32(c.Uint("uv"))
+			def.ChangeSizeType = "uv"
+		}
+
+		if c.Uint("ratio") > 0 {
+			if def.ChangeSizeType != "" {
+				return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Flags (gb, uv, ratio) are mutually exclusive, only one can be specified at a time"))
+			}
+
+			def.ChangeSize = uint32(c.Uint("ratio"))
+			def.ChangeSizeType = "ratio"
+
+			if def.ChangeSize > 100 {
+				_ = cli.ShowSubcommandHelp(c)
+				return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Invalid ratio"))
+			}
+		}
+
+		err := client.New().Volume.Shrink(def, client.DefaultExecutionTimeout)
+		if err != nil {
+			return clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "attach of volume", true).Error()))
+		}
+		fmt.Printf("Volume '%s' shrinked in host '%s'\n", c.Args().Get(0), c.Args().Get(1))
+		return nil
+	},
+}
 var volumeDetach = cli.Command{
 	Name:      "detach",
 	Usage:     "Detach a volume from an host",
@@ -216,6 +377,8 @@ type volumeInfoDisplayable struct {
 	MountPath string
 	Format    string
 	Device    string
+	InLVM     bool
+	PVS       []*volumeInfoDisplayable
 }
 
 type volumeDisplayable struct {
@@ -226,15 +389,38 @@ type volumeDisplayable struct {
 }
 
 func toDisplaybleVolumeInfo(volumeInfo *pb.VolumeInfo) *volumeInfoDisplayable {
-	return &volumeInfoDisplayable{
-		volumeInfo.GetId(),
-		volumeInfo.GetName(),
-		pb.VolumeSpeed_name[int32(volumeInfo.GetSpeed())],
-		volumeInfo.GetSize(),
-		safescaleutils.GetReference(volumeInfo.GetHost()),
-		volumeInfo.GetMountPath(),
-		volumeInfo.GetFormat(),
-		volumeInfo.GetDevice(),
+	if len(volumeInfo.PVS) == 0 {
+		return &volumeInfoDisplayable{
+			volumeInfo.GetId(),
+			volumeInfo.GetName(),
+			pb.VolumeSpeed_name[int32(volumeInfo.GetSpeed())],
+			volumeInfo.GetSize(),
+			safescaleutils.GetReference(volumeInfo.GetHost()),
+			volumeInfo.GetMountPath(),
+			volumeInfo.GetFormat(),
+			volumeInfo.GetDevice(),
+			volumeInfo.GetInLVM(),
+			[]*volumeInfoDisplayable{},
+		}
+	} else {
+		var vInfos []*volumeInfoDisplayable
+
+		for _, vin := range volumeInfo.GetPVS() {
+			vInfos = append(vInfos, toDisplaybleVolumeInfo(vin))
+		}
+
+		return &volumeInfoDisplayable{
+			volumeInfo.GetId(),
+			volumeInfo.GetName(),
+			pb.VolumeSpeed_name[int32(volumeInfo.GetSpeed())],
+			volumeInfo.GetSize(),
+			safescaleutils.GetReference(volumeInfo.GetHost()),
+			volumeInfo.GetMountPath(),
+			volumeInfo.GetFormat(),
+			volumeInfo.GetDevice(),
+			volumeInfo.GetInLVM(),
+			vInfos,
+		}
 	}
 }
 
@@ -256,6 +442,7 @@ func getAllowedSpeeds() string {
 		}
 		speeds += k
 		i++
+
 	}
 	return speeds
 }

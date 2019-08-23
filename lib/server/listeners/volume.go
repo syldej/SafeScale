@@ -115,13 +115,61 @@ func (s *VolumeListener) Create(ctx context.Context, in *pb.VolumeDefinition) (*
 	}
 
 	handler := VolumeHandler(tenant.Service)
-	volume, err := handler.Create(ctx, volumeName, int(in.GetSize()), VolumeSpeed.Enum(in.GetSpeed()))
+	volume, err := handler.Create(ctx, volumeName, int(in.GetSize()), VolumeSpeed.Enum(in.GetSpeed()), in.GetInLVM(), int(in.GetVUSize()))
 	if err != nil {
 		return nil, grpc.Errorf(codes.Internal, err.Error())
 	}
 
 	log.Infof("Volume '%s' created: %v", in.GetName(), volume.Name)
 	return conv.ToPBVolume(volume), nil
+}
+
+// Extend extends a volume
+func (s *VolumeListener) Expand(ctx context.Context, in *pb.VolumeSizeChange) (*google_protobuf.Empty, error) {
+	// FIXME Change expand logs
+	log.Debugf("Received expand command with %s, %d, %s", in.VolumeName.Name, in.ChangeSize, in.ChangeSizeType)
+
+	volumeName := in.GetVolumeName().GetName()
+	tenant := GetCurrentTenant()
+	if tenant == nil {
+		log.Info("Can't expand volumes: no tenant set")
+		return nil, grpc.Errorf(codes.FailedPrecondition, "can't shrink volume: no tenant set")
+	}
+
+	hostName := in.GetHostName().GetName()
+	handler := VolumeHandler(tenant.Service)
+
+	err := handler.Expand(ctx, volumeName, hostName, in.ChangeSize, in.ChangeSizeType)
+	if err != nil {
+		return nil, grpc.Errorf(codes.Internal, err.Error())
+	}
+
+	log.Println(fmt.Sprintf("Volume '%s' expanded", volumeName))
+	return &google_protobuf.Empty{}, nil
+}
+
+// Shrink shrinks a volume
+func (s *VolumeListener) Shrink(ctx context.Context, in *pb.VolumeSizeChange) (*google_protobuf.Empty, error) {
+	// FIXME Change shrink logs
+	log.Debugf("Received shrink command with %s, %d, %s", in.VolumeName.Name, in.ChangeSize, in.ChangeSizeType)
+
+	volumeName := in.GetVolumeName().GetName()
+	tenant := GetCurrentTenant()
+	if tenant == nil {
+		log.Info("Can't shrink volumes: no tenant set")
+		return nil, grpc.Errorf(codes.FailedPrecondition, "can't shrink volume: no tenant set")
+	}
+
+	hostName := in.GetHostName().GetName()
+	handler := VolumeHandler(tenant.Service)
+
+	err := handler.Shrink(ctx, volumeName, hostName, in.ChangeSize, in.ChangeSizeType)
+	if err != nil {
+		return nil, grpc.Errorf(codes.Internal, err.Error())
+	}
+
+	log.Println(fmt.Sprintf("Volume '%s' shrinked", volumeName))
+	return &google_protobuf.Empty{}, nil
 }
 
 // Attach a volume to an host and create a mount point
@@ -152,7 +200,7 @@ func (s *VolumeListener) Attach(ctx context.Context, in *pb.VolumeAttachment) (*
 	}
 
 	handler := VolumeHandler(tenant.Service)
-	err = handler.Attach(ctx, volumeName, hostName, in.GetMountPath(), in.GetFormat(), in.GetDoNotFormat())
+	_, err = handler.Attach(ctx, volumeName, hostName, in.GetMountPath(), in.GetFormat(), in.GetDoNotFormat())
 	if err != nil {
 		return nil, grpc.Errorf(codes.Internal, err.Error())
 	}
