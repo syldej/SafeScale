@@ -19,9 +19,10 @@ package metadata
 import (
 	"sync"
 
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
+
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/objectstorage"
-	"github.com/CS-SI/SafeScale/lib/utils"
 	"github.com/CS-SI/SafeScale/lib/utils/serialize"
 )
 
@@ -37,12 +38,19 @@ type Item struct {
 type ItemDecoderCallback func([]byte) (serialize.Serializable, error)
 
 // NewItem creates a new item with 'name' and in 'path'
-func NewItem(svc iaas.Service, path string) *Item {
-	return &Item{
-		folder:  NewFolder(svc, path),
+func NewItem(svc iaas.Service, path string) (*Item, error) {
+	fold, err := NewFolder(svc, path)
+	if err != nil {
+		return nil, err
+	}
+
+	theItem := &Item{
+		folder:  fold,
 		payload: nil,
 		lock:    &sync.Mutex{},
 	}
+
+	return theItem, nil
 }
 
 // GetService returns the service used by Item
@@ -86,7 +94,7 @@ func (i *Item) Get() interface{} {
 // DeleteFrom removes a metadata from a folder
 func (i *Item) DeleteFrom(path string, name string) error {
 	if name == "" {
-		panic("name is empty!")
+		return scerr.InvalidParameterError("name", "cannot be emtpy!")
 	}
 	if path == "" {
 		path = "."
@@ -94,7 +102,7 @@ func (i *Item) DeleteFrom(path string, name string) error {
 
 	err := i.folder.Search(path, name)
 	if err != nil {
-		if _, ok := err.(utils.ErrNotFound); ok {
+		if _, ok := err.(scerr.ErrNotFound); ok {
 			// If entry not found, consider a success
 			return nil
 		}
@@ -138,10 +146,10 @@ func (i *Item) Read(name string, callback ItemDecoderCallback) error {
 // WriteInto saves the content of Item in a subfolder to the Object Storage
 func (i *Item) WriteInto(path string, name string) error {
 	if i == nil {
-		panic("i is nil!")
+		return scerr.InvalidInstanceError()
 	}
 	if i.payload == nil {
-		panic("i.payload is nil!")
+		return scerr.InvalidInstanceContentError("i.payload", "cannot be nil")
 	}
 	data, err := i.payload.Serialize()
 	if err != nil {
@@ -160,10 +168,10 @@ func (i *Item) Write(name string) error {
 	return i.WriteInto(".", name)
 }
 
-// BrowseInto walks through a subfolder ogf item folder and executes a callback for each entry
+// BrowseInto walks through a subfolder and item folder and executes a callback for each entry
 func (i *Item) BrowseInto(path string, callback func([]byte) error) error {
 	if callback == nil {
-		panic("callback is nil!")
+		return scerr.InvalidParameterError("callback", "cannot be nil!")
 	}
 
 	if path == "" {

@@ -21,9 +21,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/pkg/errors"
 	logr "github.com/sirupsen/logrus"
 
 	"google.golang.org/grpc"
@@ -31,22 +29,22 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/CS-SI/SafeScale/lib/server/utils"
-	common "github.com/CS-SI/SafeScale/lib/utils"
+	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 )
 
 // Session units the different resources proposed by safescaled as safescale client
 type Session struct {
-	Bucket         *bucket
-	Data           *data
-	Host           *host
-	Image          *image
-	Network        *network
-	ProcessManager *processManager
-	Share          *share
-	Ssh            *ssh
-	Template       *template
-	Tenant         *tenant
-	Volume         *volume
+	Bucket     *bucket
+	Data       *data
+	Host       *host
+	Image      *image
+	JobManager *jobManager
+	Network    *network
+	Share      *share
+	SSH        *ssh
+	Template   *template
+	Tenant     *tenant
+	Volume     *volume
 
 	safescaledHost string
 	safescaledPort int
@@ -60,8 +58,8 @@ type Client *Session
 
 // DefaultTimeout tells to use the timeout by default depending on context
 var (
-	DefaultConnectionTimeout = common.GetTimeoutFromEnv("SAFESCALE_CONNECTION_TIMEOUT", 30 * time.Second)
-	DefaultExecutionTimeout  = common.GetTimeoutFromEnv("SAFESCALE_EXECUTION_TIMEOUT", 5 * time.Minute)
+	DefaultConnectionTimeout = temporal.GetConnectSSHTimeout()
+	DefaultExecutionTimeout  = temporal.GetExecutionTimeout()
 )
 
 // New returns an instance of safescale Client
@@ -85,9 +83,9 @@ func New() Client {
 	s.Host = &host{session: s}
 	s.Image = &image{session: s}
 	s.Network = &network{session: s}
-	s.ProcessManager = &processManager{session: s}
+	s.JobManager = &jobManager{session: s}
 	s.Share = &share{session: s}
-	s.Ssh = &ssh{session: s}
+	s.SSH = &ssh{session: s}
 	s.Template = &template{session: s}
 	s.Tenant = &tenant{session: s}
 	s.Volume = &volume{session: s}
@@ -113,7 +111,7 @@ func (s *Session) Disconnect() {
 }
 
 // DecorateError changes the error to something more comprehensible when
-// timeout occured
+// timeout occurred
 func DecorateError(err error, action string, maySucceed bool) error {
 	if IsTimeoutError(err) {
 		msg := "%s took too long (> %v) to respond"
@@ -123,28 +121,32 @@ func DecorateError(err error, action string, maySucceed bool) error {
 		return fmt.Errorf(msg, action, DefaultExecutionTimeout)
 	}
 	msg := err.Error()
-	if strings.Index(msg, "desc = ") != -1 {
+	if strings.Contains(msg, "desc = ") {
 		pos := strings.Index(msg, "desc = ") + 7
 		msg = msg[pos:]
 
 		if strings.Index(msg, " :") == 0 {
 			msg = msg[2:]
 		}
-		return errors.New(msg)
+		return fmt.Errorf(msg)
 	}
 	return err
 }
 
 // IsTimeoutError tells if the err is a timeout kind
 func IsTimeoutError(err error) bool {
+	// FIXME Look at that
+	/*
+		if _, ok := err.(common.ErrTimeout); ok {
+			return true
+		}
+	*/
+
 	return status.Code(err) == codes.DeadlineExceeded
 }
 
 // IsProvisioningError detects provisioning errors
 func IsProvisioningError(err error) bool {
 	errText := err.Error()
-	if strings.Contains(errText, "PROVISIONING_ERROR:") {
-		return true
-	}
-	return false
+	return strings.Contains(errText, "PROVISIONING_ERROR:")
 }

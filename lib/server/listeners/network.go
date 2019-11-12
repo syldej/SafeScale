@@ -20,9 +20,10 @@ import (
 	"context"
 	"fmt"
 
+	"google.golang.org/grpc/status"
+
 	log "github.com/sirupsen/logrus"
 
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 
 	google_protobuf "github.com/golang/protobuf/ptypes/empty"
@@ -31,9 +32,10 @@ import (
 	"github.com/CS-SI/SafeScale/lib/server/handlers"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/IPVersion"
-	"github.com/CS-SI/SafeScale/lib/server/utils"
 	conv "github.com/CS-SI/SafeScale/lib/server/utils"
 	srvutils "github.com/CS-SI/SafeScale/lib/server/utils"
+	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 )
 
 // NetworkHandler ...
@@ -48,24 +50,36 @@ var NetworkHandler = handlers.NewNetworkHandler
 type NetworkListener struct{}
 
 // Create a new network
-func (s *NetworkListener) Create(ctx context.Context, in *pb.NetworkDefinition) (*pb.Network, error) {
-	log.Infof("Listeners: network create '%s' called", in.Name)
-	defer log.Debugf("Listeners: network create '%s' done", in.Name)
+func (s *NetworkListener) Create(ctx context.Context, in *pb.NetworkDefinition) (net *pb.Network, err error) {
+	if s == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, scerr.InvalidInstanceError().Error())
+	}
+	if in == nil {
+		return nil, status.Errorf(codes.InvalidArgument, scerr.InvalidParameterError("in", "cannot be nil").Error())
+	}
+	networkName := in.GetName()
+
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s')", networkName), true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
 	ctx, cancelFunc := context.WithCancel(ctx)
-
-	if err := utils.ProcessRegister(ctx, cancelFunc, "Create network "+in.GetName()); err == nil {
-		defer utils.ProcessDeregister(ctx)
+	if err := srvutils.JobRegister(ctx, cancelFunc, "Create network "+networkName); err == nil {
+		defer srvutils.JobDeregister(ctx)
 	}
 
 	tenant := GetCurrentTenant()
 	if tenant == nil {
-		log.Info("Can't create network: no tenant set")
-		return nil, grpc.Errorf(codes.FailedPrecondition, "can't create network: no tenant set")
+		// log.Info("Can't create network: no tenant set")
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot create network: no tenant set")
 	}
 
-	var sizing *resources.SizingRequirements
-	if in.Gateway.Sizing == nil {
+	var (
+		sizing    *resources.SizingRequirements
+		gwImageID string
+		gwName    string
+	)
+	if in.Gateway == nil || in.Gateway.Sizing == nil {
 		sizing = &resources.SizingRequirements{
 			MinCores:    int(in.Gateway.Sizing.MinCpuCount),
 			MaxCores:    int(in.Gateway.Sizing.MaxCpuCount),
@@ -79,45 +93,59 @@ func (s *NetworkListener) Create(ctx context.Context, in *pb.NetworkDefinition) 
 		s := srvutils.FromPBHostSizing(*in.Gateway.Sizing)
 		sizing = &s
 	}
+	if in.Gateway != nil {
+		gwImageID = in.GetGateway().GetImageId()
+		gwName = in.GetGateway().GetName()
+	}
 
 	handler := NetworkHandler(tenant.Service)
 	network, err := handler.Create(ctx,
-		in.GetName(),
+		networkName,
 		in.GetCidr(),
 		IPVersion.IPv4,
 		*sizing,
-		in.GetGateway().GetImageId(),
-		in.GetGateway().GetName(),
+		gwImageID,
+		gwName,
+		in.FailOver,
 	)
 	if err != nil {
-		return nil, grpc.Errorf(codes.Internal, err.Error())
+		return nil, status.Errorf(codes.Internal, err.Error())
 	}
 
-	log.Infof("Network '%s' successfuly created.", network.Name)
+	log.Infof("Network '%s' successfuly created.", networkName)
 	return conv.ToPBNetwork(network), nil
 }
 
 // List existing networks
-func (s *NetworkListener) List(ctx context.Context, in *pb.NetworkListRequest) (*pb.NetworkList, error) {
-	log.Infof("Listeners: network list called")
-	defer log.Debugf("Listeners: network list done")
+func (s *NetworkListener) List(ctx context.Context, in *pb.NetworkListRequest) (rv *pb.NetworkList, err error) {
+	if s == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, scerr.InvalidInstanceError().Error())
+	}
+	if in == nil {
+		return nil, status.Errorf(codes.InvalidArgument, scerr.InvalidParameterError("in", "cannot be nil").Error())
+	}
+
+	tracer := concurrency.NewTracer(nil, "", true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	log.Infof("Listeners: network list")
 
 	ctx, cancelFunc := context.WithCancel(ctx)
-
-	if err := utils.ProcessRegister(ctx, cancelFunc, "List networks"); err == nil {
-		defer utils.ProcessDeregister(ctx)
+	if err := srvutils.JobRegister(ctx, cancelFunc, "List networks"); err == nil {
+		defer srvutils.JobDeregister(ctx)
 	}
 
 	tenant := GetCurrentTenant()
 	if tenant == nil {
-		log.Info("Can't list network: no tenant set")
-		return nil, grpc.Errorf(codes.FailedPrecondition, "can't list networks: no tenant set")
+		// log.Info("Can't list network: no tenant set")
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot list networks: no tenant set")
 	}
 
 	handler := NetworkHandler(tenant.Service)
 	networks, err := handler.List(ctx, in.GetAll())
 	if err != nil {
-		return nil, grpc.Errorf(codes.Internal, err.Error())
+		return nil, status.Errorf(codes.Internal, err.Error())
 	}
 
 	// Map resources.Network to pb.Network
@@ -125,69 +153,82 @@ func (s *NetworkListener) List(ctx context.Context, in *pb.NetworkListRequest) (
 	for _, network := range networks {
 		pbnetworks = append(pbnetworks, conv.ToPBNetwork(network))
 	}
-	rv := &pb.NetworkList{Networks: pbnetworks}
+	rv = &pb.NetworkList{Networks: pbnetworks}
 	return rv, nil
 }
 
 // Inspect returns infos on a network
-func (s *NetworkListener) Inspect(ctx context.Context, in *pb.Reference) (*pb.Network, error) {
-	log.Infof("Listeners: network inspect '%s' called'", in.Name)
-	defer log.Debugf("lib.server.listeners.NetworkListener.Inspect(%s) done'", in.Name)
-
-	ctx, cancelFunc := context.WithCancel(ctx)
-
-	if err := utils.ProcessRegister(ctx, cancelFunc, "Inspect network "+in.GetName()); err == nil {
-		defer utils.ProcessDeregister(ctx)
+func (s *NetworkListener) Inspect(ctx context.Context, in *pb.Reference) (net *pb.Network, err error) {
+	if s == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, scerr.InvalidInstanceError().Error())
+	}
+	if in == nil {
+		return nil, status.Errorf(codes.InvalidArgument, scerr.InvalidParameterError("in", "cannot be nil").Error())
+	}
+	ref := srvutils.GetReference(in)
+	if ref == "" {
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot inspect network: neither name nor id given as reference")
 	}
 
-	ref := utils.GetReference(in)
-	if ref == "" {
-		return nil, fmt.Errorf("Can't inspect network: neither name nor id given as reference")
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s')", ref), true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	ctx, cancelFunc := context.WithCancel(ctx)
+	if err := srvutils.JobRegister(ctx, cancelFunc, "Inspect network "+in.GetName()); err == nil {
+		defer srvutils.JobDeregister(ctx)
 	}
 
 	tenant := GetCurrentTenant()
 	if tenant == nil {
 		log.Info("Can't inspect network: no tenant set")
-		return nil, grpc.Errorf(codes.FailedPrecondition, "can't inspect network: no tenant set")
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot inspect network: no tenant set")
 	}
 
 	handler := NetworkHandler(currentTenant.Service)
 	network, err := handler.Inspect(ctx, ref)
 	if err != nil {
-		return nil, grpc.Errorf(codes.Internal, err.Error())
+		return nil, status.Errorf(codes.Internal, err.Error())
 	}
 	if network == nil {
-		return nil, grpc.Errorf(codes.NotFound, fmt.Sprintf("can't inspect network '%s': not found", ref))
+		return nil, status.Errorf(codes.NotFound, fmt.Sprintf("cannot inspect network '%s': not found", ref))
 	}
 
 	return conv.ToPBNetwork(network), nil
 }
 
 // Delete a network
-func (s *NetworkListener) Delete(ctx context.Context, in *pb.Reference) (*google_protobuf.Empty, error) {
-	log.Infof("Delete Network called for network '%s'", in.GetName())
-
-	ctx, cancelFunc := context.WithCancel(ctx)
-
-	if err := utils.ProcessRegister(ctx, cancelFunc, "Delete network "+in.GetName()); err == nil {
-		defer utils.ProcessDeregister(ctx)
+func (s *NetworkListener) Delete(ctx context.Context, in *pb.Reference) (buf *google_protobuf.Empty, err error) {
+	if s == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, scerr.InvalidInstanceError().Error())
+	}
+	if in == nil {
+		return nil, status.Errorf(codes.InvalidArgument, scerr.InvalidParameterError("in", "cannot be nil").Error())
+	}
+	ref := srvutils.GetReference(in)
+	if ref == "" {
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot inspect network: neither name nor id given as reference")
 	}
 
-	ref := utils.GetReference(in)
-	if ref == "" {
-		return nil, fmt.Errorf("can't delete network: neither name nor id given as reference")
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s')", ref), true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	ctx, cancelFunc := context.WithCancel(ctx)
+	if err := srvutils.JobRegister(ctx, cancelFunc, "Delete network "+in.GetName()); err == nil {
+		defer srvutils.JobDeregister(ctx)
 	}
 
 	tenant := GetCurrentTenant()
 	if tenant == nil {
-		log.Info("Can't delete network: no tenant set")
-		return nil, grpc.Errorf(codes.FailedPrecondition, "can't delete network: no tenant set")
+		// log.Info("Can't delete network: no tenant set")
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot delete network: no tenant set")
 	}
 
 	handler := NetworkHandler(currentTenant.Service)
-	err := handler.Delete(ctx, ref)
+	err = handler.Delete(ctx, ref)
 	if err != nil {
-		return nil, grpc.Errorf(codes.Internal, err.Error())
+		return nil, status.Errorf(codes.Internal, err.Error())
 	}
 
 	log.Infof("Network '%s' successfully deleted.", ref)

@@ -1,13 +1,15 @@
 package api
 
 import (
-	"github.com/CS-SI/SafeScale/lib/server/iaas/providers"
 	"time"
 
+	"github.com/sirupsen/logrus"
+
+	"github.com/CS-SI/SafeScale/lib/server/iaas/providers"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/HostState"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/userdata"
-	"github.com/sirupsen/logrus"
+	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 )
 
 // LoggedProvider ...
@@ -15,52 +17,64 @@ type LoggedProvider WrappedProvider
 
 // Provider specific functions
 
+// Build ...
 func (w LoggedProvider) Build(something map[string]interface{}) (Provider, error) {
 	defer w.prepare(w.trace("Build"))
 	return w.InnerProvider.Build(something)
 }
 
+// ListImages ...
 func (w LoggedProvider) ListImages(all bool) ([]resources.Image, error) {
 	defer w.prepare(w.trace("ListImages"))
 	return w.InnerProvider.ListImages(all)
 }
 
+// ListTemplates ...
 func (w LoggedProvider) ListTemplates(all bool) ([]resources.HostTemplate, error) {
 	defer w.prepare(w.trace("ListTemplates"))
 	return w.InnerProvider.ListTemplates(all)
 }
 
+// GetAuthenticationOptions ...
 func (w LoggedProvider) GetAuthenticationOptions() (providers.Config, error) {
 	defer w.prepare(w.trace("GetAuthenticationOptions"))
 	return w.InnerProvider.GetAuthenticationOptions()
 }
 
+// GetConfigurationOptions ...
 func (w LoggedProvider) GetConfigurationOptions() (providers.Config, error) {
 	defer w.prepare(w.trace("GetConfigurationOptions"))
 	return w.InnerProvider.GetConfigurationOptions()
 }
 
+// GetName ...
 func (w LoggedProvider) GetName() string {
 	defer w.prepare(w.trace("GetName"))
 	return w.InnerProvider.GetName()
+}
+
+// GetTenantParameters ...
+func (w LoggedProvider) GetTenantParameters() map[string]interface{} {
+	defer w.prepare(w.trace("GetTenantParameters"))
+	return w.InnerProvider.GetTenantParameters()
 }
 
 // Stack specific functions
 
 // trace ...
 func (w LoggedProvider) trace(s string) (string, time.Time) {
-	logrus.Debugf(">>> stacks.%s::%s() called", w.Name, s)
+	logrus.Tracef("stacks.%s::%s() called", w.Name, s)
 	return s, time.Now()
 }
 
 // prepare ...
 func (w LoggedProvider) prepare(s string, startTime time.Time) {
-	logrus.Debugf("<<< stacks.%s::%s() done in %d ms", w.Name, s, time.Since(startTime).Nanoseconds()/1000000)
+	logrus.Tracef("stacks.%s::%s() done in [%s]", w.Name, s, temporal.FormatDuration(time.Since(startTime)))
 }
 
 // NewLoggedProvider ...
-func NewLoggedProvider(InnerProvider Provider, name string) *LoggedProvider {
-	return &LoggedProvider{InnerProvider: InnerProvider, Name: name}
+func NewLoggedProvider(innerProvider Provider, name string) *LoggedProvider {
+	return &LoggedProvider{InnerProvider: innerProvider, Name: name}
 }
 
 // ListAvailabilityZones ...
@@ -151,6 +165,36 @@ func (w LoggedProvider) CreateGateway(req resources.GatewayRequest) (*resources.
 func (w LoggedProvider) DeleteGateway(networkID string) error {
 	defer w.prepare(w.trace("DeleteGateway"))
 	return w.InnerProvider.DeleteGateway(networkID)
+}
+
+// CreateVIP ...
+func (w LoggedProvider) CreateVIP(networkID string, description string) (*resources.VIP, error) {
+	defer w.prepare(w.trace("CreateVIP"))
+	return w.InnerProvider.CreateVIP(networkID, description)
+}
+
+// AddPublicIPToVIP adds a public IP to VIP
+func (w LoggedProvider) AddPublicIPToVIP(vip *resources.VIP) error {
+	defer w.prepare(w.trace("AddPublicIPToVIP"))
+	return w.InnerProvider.AddPublicIPToVIP(vip)
+}
+
+// BindHostToVIP makes the host passed as parameter an allowed "target" of the VIP
+func (w LoggedProvider) BindHostToVIP(vip *resources.VIP, host *resources.Host) error {
+	defer w.prepare(w.trace("BindHostToVIP"))
+	return w.InnerProvider.BindHostToVIP(vip, host)
+}
+
+// UnbindHostFromVIP removes the bind between the VIP and a host
+func (w LoggedProvider) UnbindHostFromVIP(vip *resources.VIP, host *resources.Host) error {
+	defer w.prepare(w.trace("UnbindHostFromVIP"))
+	return w.InnerProvider.UnbindHostFromVIP(vip, host)
+}
+
+// DeleteVIP deletes the port corresponding to the VIP
+func (w LoggedProvider) DeleteVIP(vip *resources.VIP) error {
+	defer w.prepare(w.trace("DeleteVIP"))
+	return w.InnerProvider.DeleteVIP(vip)
 }
 
 // CreateHost ...
@@ -259,4 +303,10 @@ func (w LoggedProvider) ListVolumeAttachments(serverID string) ([]resources.Volu
 func (w LoggedProvider) DeleteVolumeAttachment(serverID, id string) error {
 	defer w.prepare(w.trace("DeleteVolumeAttachment"))
 	return w.InnerProvider.DeleteVolumeAttachment(serverID, id)
+}
+
+// GetCapabilities returns the capabilities of the provider
+func (w LoggedProvider) GetCapabilities() providers.Capabilities {
+	defer w.prepare(w.trace("Getcapabilities"))
+	return w.InnerProvider.GetCapabilities()
 }

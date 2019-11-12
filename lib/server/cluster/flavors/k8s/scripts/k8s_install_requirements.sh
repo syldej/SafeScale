@@ -27,7 +27,7 @@ install_common_requirements() {
     useradd -s /bin/bash -m -d /home/cladm cladm
     groupadd -r -f docker &>/dev/null
     usermod -aG docker cladm
-    echo "cladm:{{ .CladmPassword }}" | chpasswd
+    echo -e "{{ .CladmPassword }}\n{{ .CladmPassword }}" | passwd cladm
     mkdir -p ~cladm/.ssh && chmod 0700 ~cladm/.ssh
     echo "{{ .SSHPublicKey }}" >~cladm/.ssh/authorized_keys
     echo "{{ .SSHPrivateKey }}" >~cladm/.ssh/id_rsa
@@ -77,7 +77,7 @@ EOF
 }
 export -f install_common_requirements
 
-case $(sfGetFact "linux kind") in
+case $(sfGetFact "linux_kind") in
     debian|ubuntu)
         sfRetry 3m 5 "sfApt update && sfApt install -y wget curl time jq unzip"
         curl -kqSsL -O https://downloads.rclone.org/rclone-current-linux-amd64.zip && \
@@ -100,9 +100,9 @@ case $(sfGetFact "linux kind") in
         dnf install wget curl time rclone jq unzip
         ;;
     *)
-        echo "Unmanaged linux distribution type '$(sfGetFact "linux kind")'"
+        echo "Unmanaged linux distribution type '$(sfGetFact "linux_kind")'"
         exit 1
         ;;
 esac
 
-/usr/bin/time -p bash -c install_common_requirements
+/usr/bin/time -p bash -c -x install_common_requirements

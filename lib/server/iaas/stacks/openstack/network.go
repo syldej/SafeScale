@@ -18,15 +18,17 @@ package openstack
 
 import (
 	"fmt"
-	"github.com/davecgh/go-spew/spew"
-	"github.com/pkg/errors"
-	log "github.com/sirupsen/logrus"
 	"net"
-	"strings"
+
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
+	"github.com/CS-SI/SafeScale/lib/utils/temporal"
+
+	log "github.com/sirupsen/logrus"
 
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/layer3/routers"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/networks"
+	"github.com/gophercloud/gophercloud/openstack/networking/v2/ports"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/subnets"
 	"github.com/gophercloud/gophercloud/pagination"
 
@@ -36,6 +38,7 @@ import (
 	propsv1 "github.com/CS-SI/SafeScale/lib/server/iaas/resources/properties/v1"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/userdata"
 	"github.com/CS-SI/SafeScale/lib/utils"
+	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
 	"github.com/CS-SI/SafeScale/lib/utils/retry"
 )
 
@@ -67,16 +70,15 @@ type Subnet struct {
 }
 
 // CreateNetwork creates a network named name
-func (s *Stack) CreateNetwork(req resources.NetworkRequest) (*resources.Network, error) {
-	log.Debugf(">>> stacks.openstack::CreateNetwork(%s)", req.Name)
-	defer log.Debugf("<<< stacks.openstack::CreateNetwork(%s)", req.Name)
-
+func (s *Stack) CreateNetwork(req resources.NetworkRequest) (newNet *resources.Network, err error) {
 	if s == nil {
-		panic("Calling stacks.openstack::CreateNetwork from nil pointer!")
+		return nil, scerr.InvalidInstanceError()
 	}
 
+	defer concurrency.NewTracer(nil, fmt.Sprintf("(%s)", req.Name), true).WithStopwatch().GoingIn().OnExitTrace()()
+
 	// Checks if CIDR is valid...
-	_, _, err := net.ParseCIDR(req.CIDR)
+	_, _, err = net.ParseCIDR(req.CIDR)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create subnet '%s (%s)': %s", req.Name, req.CIDR, err.Error())
 	}
@@ -91,9 +93,7 @@ func (s *Stack) CreateNetwork(req resources.NetworkRequest) (*resources.Network,
 	// Execute the operation and get back a networks.NetworkClient struct
 	network, err := networks.Create(s.NetworkClient, opts).Extract()
 	if err != nil {
-		msg := fmt.Sprintf("Error creating network '%s': %s", req.Name, ProviderErrorToString(err))
-		// log.Errorf(msg)
-		return nil, fmt.Errorf(msg)
+		return nil, fmt.Errorf("error creating network '%s': %s", req.Name, ProviderErrorToString(err))
 	}
 
 	// Starting from here, delete network if exit with error
@@ -102,13 +102,14 @@ func (s *Stack) CreateNetwork(req resources.NetworkRequest) (*resources.Network,
 			derr := networks.Delete(s.NetworkClient, network.ID).ExtractErr()
 			if derr != nil {
 				log.Errorf("failed to delete network '%s': %v", req.Name, derr)
+				err = scerr.AddConsequence(err, derr)
 			}
 		}
 	}()
 
 	subnet, err := s.createSubnet(req.Name, network.ID, req.CIDR, req.IPVersion, req.DNSServers)
 	if err != nil {
-		return nil, fmt.Errorf("Error creating network '%s': %s", req.Name, ProviderErrorToString(err))
+		return nil, fmt.Errorf("error creating network '%s': %s", req.Name, ProviderErrorToString(err))
 	}
 
 	// Starting from here, delete subnet if exit with error
@@ -117,11 +118,12 @@ func (s *Stack) CreateNetwork(req resources.NetworkRequest) (*resources.Network,
 			derr := s.deleteSubnet(subnet.ID)
 			if derr != nil {
 				log.Errorf("failed to delete subnet '%s': %+v", subnet.ID, derr)
+				err = scerr.AddConsequence(err, derr)
 			}
 		}
 	}()
 
-	newNet := resources.NewNetwork()
+	newNet = resources.NewNetwork()
 	newNet.ID = network.ID
 	newNet.Name = network.Name
 	newNet.CIDR = subnet.Mask
@@ -131,15 +133,14 @@ func (s *Stack) CreateNetwork(req resources.NetworkRequest) (*resources.Network,
 
 // GetNetworkByName ...
 func (s *Stack) GetNetworkByName(name string) (*resources.Network, error) {
-	log.Debugf(">>> stacks.openstack::GetNetworkByName(%s)", name)
-	defer log.Debugf("<<< stacks.openstack::GetNetworkByName(%s)", name)
-
 	if s == nil {
-		panic("Calling stacks.openstack::GetNetworkByName from nil pointer!")
+		return nil, scerr.InvalidInstanceError()
 	}
 	if name == "" {
-		panic("name is empty!")
+		return nil, scerr.InvalidParameterError("name", "cannot be empty string")
 	}
+
+	defer concurrency.NewTracer(nil, fmt.Sprintf("(%s)", name), true).WithStopwatch().GoingIn().OnExitTrace()()
 
 	// Gophercloud doesn't propose the way to get a host by name, but OpenStack knows how to do it...
 	r := networks.GetResult{}
@@ -148,7 +149,7 @@ func (s *Stack) GetNetworkByName(name string) (*resources.Network, error) {
 	})
 	if r.Err != nil {
 		if _, ok := r.Err.(gophercloud.ErrDefault403); ok {
-			return nil, resources.ResourceAccessDeniedError("network", name)
+			return nil, resources.ResourceForbiddenError("network", name)
 		}
 		return nil, fmt.Errorf("query for network '%s' failed: %v", name, r.Err)
 	}
@@ -163,35 +164,35 @@ func (s *Stack) GetNetworkByName(name string) (*resources.Network, error) {
 
 // GetNetwork returns the network identified by id
 func (s *Stack) GetNetwork(id string) (*resources.Network, error) {
-	log.Debugf(">>> stacks.openstack::GetNetwork(%s)", id)
-	defer log.Debugf("<<< stacks.openstack::GetNetwork(%s)", id)
-
 	if s == nil {
-		panic("Calling stacks.openstack::GetNetwork from nil pointer!")
+		return nil, scerr.InvalidInstanceError()
 	}
+	if id == "" {
+		return nil, scerr.InvalidParameterError("id", "cannot be empty string")
+	}
+
+	defer concurrency.NewTracer(nil, fmt.Sprintf("(%s)", id), true).WithStopwatch().GoingIn().OnExitTrace()()
 
 	// If not found, we look for any network from provider
 	// 1st try with id
 	network, err := networks.Get(s.NetworkClient, id).Extract()
 	if err != nil {
 		if _, ok := err.(gophercloud.ErrDefault404); !ok {
-			// log.Errorf("Error getting network: %+v", err)
-			return nil, errors.Wrap(err, fmt.Sprintf("Error getting network '%s': %s", id, ProviderErrorToString(err)))
+			return nil, scerr.Wrap(err, fmt.Sprintf("error getting network '%s': %s", id, ProviderErrorToString(err)))
 		}
 	}
 	if network != nil && network.ID != "" {
 		sns, err := s.listSubnets(id)
 		if err != nil {
-			// log.Errorf("Error getting network: listing subnet: %+v", err)
-			return nil, errors.Wrap(err, fmt.Sprintf("Error getting network: %s", ProviderErrorToString(err)))
+			return nil, scerr.Wrap(err, fmt.Sprintf("error getting network: %s", ProviderErrorToString(err)))
 		}
 		if len(sns) != 1 {
-			return nil, fmt.Errorf("Bad configuration, each network should have exactly one subnet")
+			return nil, fmt.Errorf("bad configuration, each network should have exactly one subnet")
 		}
 		sn := sns[0]
 		// gwID, _ := client.getGateway(id)
 		// if err != nil {
-		// 	return nil, fmt.Errorf("Bad configuration, no gateway associated to this network")
+		// 	return nil, fmt.Errorf("bad configuration, no gateway associated to this network")
 		// }
 		newNet := resources.NewNetwork()
 		newNet.ID = network.ID
@@ -203,18 +204,18 @@ func (s *Stack) GetNetwork(id string) (*resources.Network, error) {
 	}
 
 	// At this point, no network has been found with given reference
-	log.Debugf(resources.ResourceNotFoundError("network(GetNetwork)", id).Error())
-	return nil, errors.Wrap(resources.ResourceNotFoundError("network(GetNetwork)", id), "")
+	errNotFound := resources.ResourceNotFoundError("network(GetNetwork)", id)
+	log.Debug(errNotFound)
+	return nil, errNotFound
 }
 
 // ListNetworks lists available networks
 func (s *Stack) ListNetworks() ([]*resources.Network, error) {
-	log.Debug(">>> stacks.openstack::ListNetworks()")
-	defer log.Debug("<<< stacks.openstack::ListNetworks()")
-
 	if s == nil {
-		panic("Calling stacks.openstack::ListNetworks from nil pointer!")
+		return nil, scerr.InvalidInstanceError()
 	}
+
+	defer concurrency.NewTracer(nil, "", true).WithStopwatch().GoingIn().OnExitTrace()()
 
 	// Retrieve a pager (i.e. a paginated collection)
 	var netList []*resources.Network
@@ -229,7 +230,7 @@ func (s *Stack) ListNetworks() ([]*resources.Network, error) {
 			for _, n := range networkList {
 				sns, err := s.listSubnets(n.ID)
 				if err != nil {
-					return false, fmt.Errorf("Error getting network: %s", ProviderErrorToString(err))
+					return false, fmt.Errorf("error getting network: %s", ProviderErrorToString(err))
 				}
 				if len(sns) != 1 {
 					continue
@@ -252,8 +253,7 @@ func (s *Stack) ListNetworks() ([]*resources.Network, error) {
 	)
 	if len(netList) == 0 || err != nil {
 		if err != nil {
-			log.Debugf("Error listing networks: pagination error: %+v", err)
-			return nil, errors.Wrap(err, fmt.Sprintf("Error listing networks: %s", ProviderErrorToString(err)))
+			return nil, scerr.Wrap(err, fmt.Sprintf("error listing networks: %s", ProviderErrorToString(err)))
 		}
 		log.Debugf("Listing all networks: Empty network list !")
 	}
@@ -262,19 +262,21 @@ func (s *Stack) ListNetworks() ([]*resources.Network, error) {
 
 // DeleteNetwork deletes the network identified by id
 func (s *Stack) DeleteNetwork(id string) error {
-	log.Debugf(">>> stacks.openstack::DeleteNetwork(%s)", id)
-	defer log.Debugf("<<< stacks.openstack::DeleteNetwork(%s)", id)
-
 	if s == nil {
-		panic("Calling stacks.openstack::DeleteNetwork from nil pointer!")
+		return scerr.InvalidInstanceError()
 	}
+
+	defer concurrency.NewTracer(nil, fmt.Sprintf("(%s)", id), true).WithStopwatch().GoingIn().OnExitTrace()()
 
 	network, err := networks.Get(s.NetworkClient, id).Extract()
 	if err != nil {
-		log.Errorf("Failed to delete network: %+v", err)
-		if strings.Contains(err.Error(), "Resource not found") {
-			log.Errorf("Inconsistent network data !!")
+		err = TranslateError(err)
+		switch err.(type) {
+		case scerr.ErrNotFound:
+		default:
+			log.Errorf("failed to delete network: %+v", err)
 		}
+		return err
 	}
 
 	sns, err := s.listSubnets(id)
@@ -287,7 +289,7 @@ func (s *Stack) DeleteNetwork(id string) error {
 		err := s.deleteSubnet(sn.ID)
 		if err != nil {
 			switch err.(type) {
-			case resources.ErrResourceNotAvailable:
+			case scerr.ErrNotAvailable:
 				return err
 			default:
 				msg := fmt.Sprintf("failed to delete network '%s': %s", network.Name, ProviderErrorToString(err))
@@ -299,7 +301,7 @@ func (s *Stack) DeleteNetwork(id string) error {
 	err = networks.Delete(s.NetworkClient, id).ExtractErr()
 	if err != nil {
 		switch err.(type) {
-		case resources.ErrResourceNotAvailable:
+		case scerr.ErrNotAvailable:
 			return err
 		default:
 			msg := fmt.Sprintf("failed to delete network '%s': %s", network.Name, ProviderErrorToString(err))
@@ -312,19 +314,18 @@ func (s *Stack) DeleteNetwork(id string) error {
 }
 
 // CreateGateway creates a public Gateway for a private network
-func (s *Stack) CreateGateway(req resources.GatewayRequest) (*resources.Host, *userdata.Content, error) {
-	log.Debugf(">>> stacks.openstack::CreateGateway(%s)", req.Name)
-	defer log.Debugf("<<< stacks.openstack::CreateGateway(%s)", req.Name)
-
+func (s *Stack) CreateGateway(req resources.GatewayRequest) (host *resources.Host, userData *userdata.Content, err error) {
 	if s == nil {
-		panic("Calling stacks.openstack::CreateGateway from nil pointer!")
+		return nil, nil, scerr.InvalidInstanceError()
 	}
 
-	userData := userdata.NewContent()
+	defer concurrency.NewTracer(nil, fmt.Sprintf("(%s)", req.Name), true).WithStopwatch().GoingIn().OnExitTrace()()
+
+	userData = userdata.NewContent()
 
 	// Ensure network exists
 	if req.Network == nil {
-		panic("req.Network is nil!")
+		return nil, nil, scerr.InvalidParameterError("req.Network", "cannot be nil")
 	}
 	gwname := req.Name
 	if gwname == "" {
@@ -344,18 +345,26 @@ func (s *Stack) CreateGateway(req resources.GatewayRequest) (*resources.Host, *u
 		PublicIP:     true,
 		Password:     password,
 	}
-	host, userData, err := s.CreateHost(hostReq)
+	host, userData, err = s.CreateHost(hostReq)
 	if err != nil {
-		log.Errorf("Error creating gateway: creating host: %+v", err)
-		return nil, userData, errors.Wrap(err, fmt.Sprintf("Error creating gateway : %s", ProviderErrorToString(err)))
+		return nil, userData, scerr.Wrap(err, fmt.Sprintf("error creating gateway : %s", ProviderErrorToString(err)))
 	}
 
 	// delete the host when found problem starting from here
+	newHost := host
 	defer func() {
 		if err != nil {
-			derr := s.DeleteHost(host.ID)
+			derr := s.DeleteHost(newHost.ID)
 			if derr != nil {
-				log.Errorf("failed to delete host '%s': %v", host.Name, derr)
+				switch derr.(type) {
+				case scerr.ErrNotFound:
+					log.Errorf("Cleaning up on failure, failed to delete host '%s', resource not found: '%v'", newHost.Name, derr)
+				case scerr.ErrTimeout:
+					log.Errorf("Cleaning up on failure, failed to delete host '%s', timeout: '%v'", newHost.Name, derr)
+				default:
+					log.Errorf("Cleaning up on failure, failed to delete host '%s': '%v'", newHost.Name, derr)
+				}
+				err = scerr.AddConsequence(err, derr)
 			}
 		}
 	}()
@@ -367,19 +376,21 @@ func (s *Stack) CreateGateway(req resources.GatewayRequest) (*resources.Host, *u
 		return nil
 	})
 	if err != nil {
-		return nil, userData, errors.Wrap(err, fmt.Sprintf("Error creating gateway : %s", ProviderErrorToString(err)))
+		return nil, userData, scerr.Wrap(err, fmt.Sprintf("error creating gateway : %s", ProviderErrorToString(err)))
 	}
 	return host, userData, nil
 }
 
 // DeleteGateway delete the public gateway of a private network
 func (s *Stack) DeleteGateway(id string) error {
-	log.Debugf(">>> stacks.openstack::DeleteGateway(%s)", id)
-	defer log.Debugf("<<< stacks.openstack::DeleteGateway(%s)", id)
-
 	if s == nil {
-		panic("Calling stacks.openstack::DeleteGateway from nil pointer!")
+		return scerr.InvalidInstanceError()
 	}
+	if id == "" {
+		return scerr.InvalidParameterError("id", "cannot be empty string")
+	}
+
+	defer concurrency.NewTracer(nil, fmt.Sprintf("(%s)", id), true).WithStopwatch().GoingIn().OnExitTrace()()
 
 	return s.DeleteHost(id)
 }
@@ -388,7 +399,8 @@ func (s *Stack) DeleteGateway(id string) error {
 func ToGopherIPversion(v IPVersion.Enum) gophercloud.IPVersion {
 	if v == IPVersion.IPv4 {
 		return gophercloud.IPv4
-	} else if v == IPVersion.IPv6 {
+	}
+	if v == IPVersion.IPv6 {
 		return gophercloud.IPv6
 	}
 	return -1
@@ -397,7 +409,8 @@ func ToGopherIPversion(v IPVersion.Enum) gophercloud.IPVersion {
 func fromGopherIPversion(v gophercloud.IPVersion) IPVersion.Enum {
 	if v == gophercloud.IPv4 {
 		return IPVersion.IPv4
-	} else if v == gophercloud.IPv6 {
+	}
+	if v == gophercloud.IPv6 {
 		return IPVersion.IPv6
 	}
 	return -1
@@ -407,7 +420,8 @@ func fromGopherIPversion(v gophercloud.IPVersion) IPVersion.Enum {
 func FromIntIPversion(v int) IPVersion.Enum {
 	if v == 4 {
 		return IPVersion.IPv4
-	} else if v == 6 {
+	}
+	if v == 6 {
 		return IPVersion.IPv6
 	}
 	return -1
@@ -417,7 +431,7 @@ func FromIntIPversion(v int) IPVersion.Enum {
 // - netID ID of the parent network
 // - name is the name of the sub network
 // - mask is a network mask defined in CIDR notation
-func (s *Stack) createSubnet(name string, networkID string, cidr string, ipVersion IPVersion.Enum, dnsServers []string) (*Subnet, error) {
+func (s *Stack) createSubnet(name string, networkID string, cidr string, ipVersion IPVersion.Enum, dnsServers []string) (subn *Subnet, err error) {
 	// You must associate a new subnet with an existing network - to do this you
 	// need its UUID. You must also provide a well-formed CIDR value.
 	dhcp := true
@@ -462,13 +476,11 @@ func (s *Stack) createSubnet(name string, networkID string, cidr string, ipVersi
 		case gophercloud.ErrDefault400:
 			neutronError := ParseNeutronError(r.Err.Error())
 			if neutronError != nil {
-				msg := fmt.Sprintf("Error creating subnet: bad request: %s\n", neutronError["message"])
-				log.Debugf(msg)
+				msg := fmt.Sprintf("error creating subnet: bad request: %s\n", neutronError["message"])
 				return nil, fmt.Errorf(msg)
 			}
 		}
-		log.Debugf("Error creating subnet: %+v\n", err)
-		return nil, errors.Wrap(err, fmt.Sprintf("Error creating subnet: %s", ProviderErrorToString(err)))
+		return nil, scerr.Wrap(err, fmt.Sprintf("error creating subnet: %s", ProviderErrorToString(err)))
 	}
 
 	// Starting from here, delete subnet if exit with error
@@ -477,6 +489,7 @@ func (s *Stack) createSubnet(name string, networkID string, cidr string, ipVersi
 			derr := s.deleteSubnet(subnet.ID)
 			if derr != nil {
 				log.Warnf("Error deleting subnet: %v", derr)
+				err = scerr.AddConsequence(err, derr)
 			}
 		}
 	}()
@@ -487,8 +500,7 @@ func (s *Stack) createSubnet(name string, networkID string, cidr string, ipVersi
 			NetworkID: s.ProviderNetworkID,
 		})
 		if err != nil {
-			log.Debugf("Error creating subnet: %+v", err)
-			return nil, errors.Wrap(err, fmt.Sprintf("Error creating subnet: %s", ProviderErrorToString(err)))
+			return nil, scerr.Wrap(err, fmt.Sprintf("error creating subnet: %s", ProviderErrorToString(err)))
 		}
 
 		// Starting from here, delete router if exit with error
@@ -497,14 +509,14 @@ func (s *Stack) createSubnet(name string, networkID string, cidr string, ipVersi
 				derr := s.deleteRouter(router.ID)
 				if derr != nil {
 					log.Warnf("Error deleting router: %v", derr)
+					err = scerr.AddConsequence(err, derr)
 				}
 			}
 		}()
 
 		err = s.addSubnetToRouter(router.ID, subnet.ID)
 		if err != nil {
-			log.Debugf("Error creating subnet: %+v", err)
-			return nil, errors.Wrap(err, fmt.Sprintf("Error creating subnet: %s", ProviderErrorToString(err)))
+			return nil, scerr.Wrap(err, fmt.Sprintf("error creating subnet: %s", ProviderErrorToString(err)))
 		}
 	}
 
@@ -522,7 +534,7 @@ func (s *Stack) createSubnet(name string, networkID string, cidr string, ipVersi
 func calcDhcpAllocationPool(cidr string) (string, string, error) {
 	_, _, err := net.ParseCIDR(cidr)
 	if err != nil {
-		return "", "", fmt.Errorf("Invalid cidr '%s'", cidr)
+		return "", "", fmt.Errorf("invalid cidr '%s'", cidr)
 	}
 
 	start, end, err := utils.CIDRToLongRange(cidr)
@@ -531,11 +543,11 @@ func calcDhcpAllocationPool(cidr string) (string, string, error) {
 	}
 	start += 11
 	if start >= end {
-		return "", "", utils.OverflowError(fmt.Sprintf("Not enough IP Addresses in CIDR '%s' to reserve 10 static IP addresses", cidr))
+		return "", "", scerr.OverflowError(fmt.Sprintf("Not enough IP Addresses in CIDR '%s' to reserve 10 static IP addresses", cidr))
 	}
 	end -= 3
 	if end <= start {
-		return "", "", utils.OverflowError(fmt.Sprintf("Not enough IP Addresses in CIDR '%s' to reserve 10 static IP addresses", cidr))
+		return "", "", scerr.OverflowError(fmt.Sprintf("Not enough IP Addresses in CIDR '%s' to reserve 10 static IP addresses", cidr))
 	}
 	return utils.LongToIPv4(start), utils.LongToIPv4(end), nil
 }
@@ -545,8 +557,7 @@ func (s *Stack) getSubnet(id string) (*Subnet, error) {
 	// Execute the operation and get back a subnets.Subnet struct
 	subnet, err := subnets.Get(s.NetworkClient, id).Extract()
 	if err != nil {
-		log.Debugf("Error getting subnet: getting subnet: %+v", err)
-		return nil, errors.Wrap(err, fmt.Sprintf("Error getting subnet: %s", ProviderErrorToString(err)))
+		return nil, scerr.Wrap(err, fmt.Sprintf("error getting subnet: %s", ProviderErrorToString(err)))
 	}
 	return &Subnet{
 		ID:        subnet.ID,
@@ -566,7 +577,7 @@ func (s *Stack) listSubnets(netID string) ([]Subnet, error) {
 	paginationErr := pager.EachPage(func(page pagination.Page) (bool, error) {
 		list, err := subnets.ExtractSubnets(page)
 		if err != nil {
-			return false, fmt.Errorf("Error listing subnets: %s", ProviderErrorToString(err))
+			return false, fmt.Errorf("error listing subnets: %s", ProviderErrorToString(err))
 		}
 
 		for _, subnet := range list {
@@ -583,8 +594,7 @@ func (s *Stack) listSubnets(netID string) ([]Subnet, error) {
 
 	if (paginationErr != nil) || (len(subnetList) == 0) {
 		if paginationErr != nil {
-			log.Debugf("Error listing subnets: pagination error: %+v", paginationErr)
-			return nil, errors.Wrap(paginationErr, fmt.Sprintf("we have a pagination error !: %v", paginationErr))
+			return nil, scerr.Wrap(paginationErr, fmt.Sprintf("we have a pagination error !: %v", paginationErr))
 		}
 	}
 
@@ -638,19 +648,19 @@ func (s *Stack) deleteSubnet(id string) error {
 			}
 			return nil
 		},
-		utils.GetContextTimeout(),
+		temporal.GetContextTimeout(),
 	)
 	if retryErr != nil {
 		if _, ok := retryErr.(retry.ErrTimeout); ok {
 			// If we have the last error of the delete try, returns this error
 			if err != nil {
-				if _, ok := err.(resources.ErrResourceNotAvailable); ok {
+				if _, ok := err.(scerr.ErrNotAvailable); ok {
 					return err
 				}
-				return fmt.Errorf("failed to delete subnet after %v: %v", utils.GetContextTimeout(), err)
+				return resources.TimeoutError(fmt.Sprintf("failed to delete subnet after %v: %v", temporal.GetContextTimeout(), err), temporal.GetContextTimeout())
 			}
 		}
-		return fmt.Errorf("failed to delete subnet after %v: %v", utils.GetContextTimeout(), retryErr)
+		return fmt.Errorf("failed to delete subnet after %v: %v", temporal.GetContextTimeout(), retryErr)
 	}
 	return nil
 }
@@ -669,8 +679,7 @@ func (s *Stack) createRouter(req RouterRequest) (*Router, error) {
 	}
 	router, err := routers.Create(s.NetworkClient, opts).Extract()
 	if err != nil {
-		log.Debugf("failed to create router '%s': %+v", req.Name, err)
-		return nil, errors.Wrap(err, fmt.Sprintf("failed to create router '%s': %s", req.Name, ProviderErrorToString(err)))
+		return nil, scerr.Wrap(err, fmt.Sprintf("failed to create router '%s': %s", req.Name, ProviderErrorToString(err)))
 	}
 	log.Debugf("Router '%s' (%s) successfully created", router.Name, router.ID)
 	return &Router{
@@ -684,8 +693,7 @@ func (s *Stack) createRouter(req RouterRequest) (*Router, error) {
 func (s *Stack) getRouter(id string) (*Router, error) {
 	r, err := routers.Get(s.NetworkClient, id).Extract()
 	if err != nil {
-		log.Debugf("Error getting router '%s': %+v", id, err)
-		return nil, errors.Wrap(err, fmt.Sprintf("Error getting Router: %s", ProviderErrorToString(err)))
+		return nil, scerr.Wrap(err, fmt.Sprintf("error getting Router: %s", ProviderErrorToString(err)))
 	}
 	return &Router{
 		ID:        r.ID,
@@ -697,7 +705,7 @@ func (s *Stack) getRouter(id string) (*Router, error) {
 // ListRouters lists available routers
 func (s *Stack) ListRouters() ([]Router, error) {
 	if s == nil {
-		panic("Calling openstack.Stack::ListRouters from nil pointer!")
+		return nil, scerr.InvalidInstanceError()
 	}
 
 	var ns []Router
@@ -719,7 +727,7 @@ func (s *Stack) ListRouters() ([]Router, error) {
 		},
 	)
 	if err != nil {
-		return nil, errors.Wrap(err, fmt.Sprintf("Error listing volume types: %s", ProviderErrorToString(err)))
+		return nil, scerr.Wrap(err, fmt.Sprintf("error listing volume types: %s", ProviderErrorToString(err)))
 	}
 	return ns, nil
 }
@@ -728,8 +736,7 @@ func (s *Stack) ListRouters() ([]Router, error) {
 func (s *Stack) deleteRouter(id string) error {
 	err := routers.Delete(s.NetworkClient, id).ExtractErr()
 	if err != nil {
-		log.Debugf("Error deleting router: %+v", err)
-		return errors.Wrap(err, fmt.Sprintf("error deleting router: %s", ProviderErrorToString(err)))
+		return scerr.Wrap(err, fmt.Sprintf("error deleting router: %s", ProviderErrorToString(err)))
 	}
 	return nil
 }
@@ -740,23 +747,157 @@ func (s *Stack) addSubnetToRouter(routerID string, subnetID string) error {
 		SubnetID: subnetID,
 	}).Extract()
 	if err != nil {
-		log.Debugf("Error adding subnet to router: adding interface: %+v", err)
-		return errors.Wrap(err, fmt.Sprintf("Error addinter subnet: %s", ProviderErrorToString(err)))
+		return scerr.Wrap(err, fmt.Sprintf("error addinter subnet: %s", ProviderErrorToString(err)))
 	}
 	return nil
 }
 
-// removeSubnetFromRouter detachesa subnet from router interface
+// removeSubnetFromRouter detaches a subnet from router interface
 func (s *Stack) removeSubnetFromRouter(routerID string, subnetID string) error {
 	r := routers.RemoveInterface(s.NetworkClient, routerID, routers.RemoveInterfaceOpts{
 		SubnetID: subnetID,
 	})
 	_, err := r.Extract()
 	if err != nil {
-		spew.Dump(r)
 		msg := fmt.Sprintf("failed to remove subnet '%s' from router '%s': %s", subnetID, routerID, ProviderErrorToString(err))
-		log.Debug(msg)
-		return errors.Wrap(err, msg)
+		return scerr.Wrap(err, msg)
 	}
 	return nil
+}
+
+// listPorts lists all ports available
+func (s *Stack) listPorts(options ports.ListOpts) ([]ports.Port, error) {
+	allPages, err := ports.List(s.NetworkClient, options).AllPages()
+	if err != nil {
+		return nil, err
+	}
+	return ports.ExtractPorts(allPages)
+}
+
+// CreateVIP creates a private virtual IP
+// If public is set to true,
+func (s *Stack) CreateVIP(networkID string, name string) (*resources.VIP, error) {
+	if s == nil {
+		return nil, scerr.InvalidInstanceError()
+	}
+
+	asu := true
+	sg := []string{s.SecurityGroup.ID}
+	options := ports.CreateOpts{
+		NetworkID:      networkID,
+		AdminStateUp:   &asu,
+		Name:           name,
+		SecurityGroups: &sg,
+	}
+	port, err := ports.Create(s.NetworkClient, options).Extract()
+	if err != nil {
+		return nil, err
+	}
+	vip := resources.VIP{
+		ID:        port.ID,
+		PrivateIP: port.FixedIPs[0].IPAddress,
+	}
+	return &vip, nil
+}
+
+// AddPublicIPToVIP adds a public IP to VIP
+func (s *Stack) AddPublicIPToVIP(vip *resources.VIP) error {
+	if s == nil {
+		return scerr.InvalidInstanceError()
+	}
+
+	return scerr.NotImplementedError("AddPublicIPToVIP() not implemented yet")
+}
+
+// BindHostToVIP makes the host passed as parameter an allowed "target" of the VIP
+func (s *Stack) BindHostToVIP(vip *resources.VIP, host *resources.Host) error {
+	if s == nil {
+		return scerr.InvalidInstanceError()
+	}
+	if vip == nil {
+		return scerr.InvalidParameterError("vip", "cannot be nil")
+	}
+	if host == nil {
+		return scerr.InvalidParameterError("host", "cannot be nil")
+	}
+
+	vipPort, err := ports.Get(s.NetworkClient, vip.ID).Extract()
+	if err != nil {
+		return err
+	}
+	hostPorts, err := s.listPorts(ports.ListOpts{
+		DeviceID:  host.ID,
+		NetworkID: vip.NetworkID,
+	})
+	if err != nil {
+		return err
+	}
+	addressPair := ports.AddressPair{
+		MACAddress: vipPort.MACAddress,
+		IPAddress:  vip.PrivateIP,
+	}
+	for _, p := range hostPorts {
+		p.AllowedAddressPairs = append(p.AllowedAddressPairs, addressPair)
+		_, err = ports.Update(s.NetworkClient, p.ID, ports.UpdateOpts{AllowedAddressPairs: &p.AllowedAddressPairs}).Extract()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// UnbindHostFromVIP removes the bind between the VIP and a host
+func (s *Stack) UnbindHostFromVIP(vip *resources.VIP, host *resources.Host) error {
+	if s == nil {
+		return scerr.InvalidInstanceError()
+	}
+	if vip == nil {
+		return scerr.InvalidParameterError("vip", "cannot be nil")
+	}
+	if host == nil {
+		return scerr.InvalidParameterError("host", "cannot be nil")
+	}
+
+	vipPort, err := ports.Get(s.NetworkClient, vip.ID).Extract()
+	if err != nil {
+		return err
+	}
+	hostPorts, err := s.listPorts(ports.ListOpts{
+		DeviceID:  host.ID,
+		NetworkID: vip.NetworkID,
+	})
+	if err != nil {
+		return err
+	}
+	for _, p := range hostPorts {
+		newAllowedAddressPairs := []ports.AddressPair{}
+		for _, a := range p.AllowedAddressPairs {
+			if a.MACAddress != vipPort.MACAddress {
+				newAllowedAddressPairs = append(newAllowedAddressPairs, a)
+			}
+		}
+		_, err = ports.Update(s.NetworkClient, p.ID, ports.UpdateOpts{AllowedAddressPairs: &newAllowedAddressPairs}).Extract()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DeleteVIP deletes the port corresponding to the VIP
+func (s *Stack) DeleteVIP(vip *resources.VIP) error {
+	if s == nil {
+		return scerr.InvalidInstanceError()
+	}
+	if vip == nil {
+		return scerr.InvalidParameterError("vip", "cannot be nil")
+	}
+
+	for _, h := range vip.Hosts {
+		err := s.UnbindHostFromVIP(vip, h)
+		if err != nil {
+			return err
+		}
+	}
+	return ports.Delete(s.NetworkClient, vip.ID).ExtractErr()
 }

@@ -20,15 +20,16 @@ import (
 	"context"
 	"fmt"
 
-	log "github.com/sirupsen/logrus"
-
 	google_protobuf "github.com/golang/protobuf/ptypes/empty"
-	"google.golang.org/grpc"
+	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
-	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	pb "github.com/CS-SI/SafeScale/lib"
-	"github.com/CS-SI/SafeScale/lib/server/utils"
+	"github.com/CS-SI/SafeScale/lib/server/iaas"
+	srvutils "github.com/CS-SI/SafeScale/lib/server/utils"
+	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 )
 
 // Tenant structure to handle name and clientAPI for a tenant
@@ -44,7 +45,7 @@ var (
 // GetCurrentTenant contains the current tenant
 var GetCurrentTenant = getCurrentTenant
 
-// getCurrentTenant returns the tenant used for commands or, if not set, set the tenant to use if it is the only one registerd
+// getCurrentTenant returns the tenant used for commands or, if not set, set the tenant to use if it is the only one registered
 func getCurrentTenant() *Tenant {
 	if currentTenant == nil {
 		tenants, err := iaas.GetTenantNames()
@@ -67,16 +68,20 @@ func getCurrentTenant() *Tenant {
 // TenantListener server is used to implement SafeScale.safescale.
 type TenantListener struct{}
 
-// List registerd tenants
-func (s *TenantListener) List(ctx context.Context, in *google_protobuf.Empty) (*pb.TenantList, error) {
-	log.Infoln("Listeners: receiving \"tenant list\"")
-	log.Debugln(">>> TenantListener::List()")
-	defer log.Debugln("<<< TenantListener::List()")
+// List registered tenants
+func (s *TenantListener) List(ctx context.Context, in *google_protobuf.Empty) (list *pb.TenantList, err error) {
+	if s == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, scerr.InvalidInstanceError().Error())
+	}
+
+	tracer := concurrency.NewTracer(nil, "", true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
 	ctx, cancelFunc := context.WithCancel(ctx)
-
-	if err := utils.ProcessRegister(ctx, cancelFunc, "Tenants List"); err == nil {
-		defer utils.ProcessDeregister(ctx)
+	// FIXME: handle error
+	if err := srvutils.JobRegister(ctx, cancelFunc, "Tenants List"); err == nil {
+		defer srvutils.JobDeregister(ctx)
 	}
 
 	tenants, err := iaas.GetTenantNames()
@@ -96,48 +101,63 @@ func (s *TenantListener) List(ctx context.Context, in *google_protobuf.Empty) (*
 }
 
 // Get returns the name of the current tenant used
-func (s *TenantListener) Get(ctx context.Context, in *google_protobuf.Empty) (*pb.TenantName, error) {
-	log.Infoln("Listeners: receiving \"tenant get\"")
-	log.Debugln(">>> TenantListener::Get()")
-	defer log.Debugln(">>> TenantListener::Get()")
+func (s *TenantListener) Get(ctx context.Context, in *google_protobuf.Empty) (tn *pb.TenantName, err error) {
+	if s == nil {
+		// FIXME: return a status.Errorf
+		return nil, status.Errorf(codes.FailedPrecondition, scerr.InvalidInstanceError().Error())
+	}
+
+	tracer := concurrency.NewTracer(nil, "", true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
 	ctx, cancelFunc := context.WithCancel(ctx)
-
-	if err := utils.ProcessRegister(ctx, cancelFunc, "Tenant Get"); err == nil {
-		defer utils.ProcessDeregister(ctx)
+	// FIXME: handle error
+	if err := srvutils.JobRegister(ctx, cancelFunc, "Tenant Get"); err == nil {
+		defer srvutils.JobDeregister(ctx)
 	}
 
 	getCurrentTenant()
 	if currentTenant == nil {
 		log.Info("Can't get tenant: no tenant set")
-		return nil, grpc.Errorf(codes.FailedPrecondition, "can't get tenant: no tenant set")
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot get tenant: no tenant set")
 	}
 	return &pb.TenantName{Name: currentTenant.name}, nil
 }
 
 // Set the the tenant to use for each command
-func (s *TenantListener) Set(ctx context.Context, in *pb.TenantName) (*google_protobuf.Empty, error) {
-	log.Infof("Listeners: receiving \"tenant set %s\"", in.Name)
-	log.Debugf(">>> TenantListener::Set(%s)", in.Name)
-	defer log.Debugf("<<< TenantListener::Set(%s)", in.Name)
+func (s *TenantListener) Set(ctx context.Context, in *pb.TenantName) (empty *google_protobuf.Empty, err error) {
+	empty = &google_protobuf.Empty{}
+	if s == nil {
+		return empty, status.Errorf(codes.FailedPrecondition, scerr.InvalidInstanceError().Error())
+	}
+	if in == nil {
+		return empty, status.Errorf(codes.InvalidArgument, scerr.InvalidParameterError("in", "cannot be nil").Error())
+	}
+	name := in.GetName()
+	// FIXME: validate parameters
+
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s')", name), true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
 	ctx, cancelFunc := context.WithCancel(ctx)
-
-	if err := utils.ProcessRegister(ctx, cancelFunc, "Tenant Set "+in.GetName()); err == nil {
-		defer utils.ProcessDeregister(ctx)
+	// FIXME: handle error
+	if err := srvutils.JobRegister(ctx, cancelFunc, "Tenant Set "+name); err == nil {
+		defer srvutils.JobDeregister(ctx)
 	}
 
 	if currentTenant != nil && currentTenant.name == in.GetName() {
-		return &google_protobuf.Empty{}, nil
+		return empty, nil
 	}
 
 	service, err := iaas.UseService(in.GetName())
 	if err != nil {
-		return &google_protobuf.Empty{}, fmt.Errorf("Unable to set tenant '%s': %s", in.GetName(), err.Error())
+		return empty, fmt.Errorf("unable to set tenant '%s': %s", name, err.Error())
 	}
 	currentTenant = &Tenant{name: in.GetName(), Service: service}
-	log.Infof("Current tenant is now '%s'", in.GetName())
-	return &google_protobuf.Empty{}, nil
+	log.Infof("Current tenant is now '%s'", name)
+	return empty, nil
 }
 
 //StorageTenants strcture handle tenants names and storages services for a group of storage tenants
@@ -153,7 +173,7 @@ var (
 // GetCurrentStorageTenants contains the current tenant
 var GetCurrentStorageTenants = getCurrentStorageTenants
 
-// getCurrentTenant returns the tenant used for commands or, if not set, set the tenant to use if it is the only one registerd
+// getCurrentTenant returns the tenant used for commands or, if not set, set the tenant to use if it is the only one registered
 func getCurrentStorageTenants() *StorageTenants {
 	//TODO-AJ should we select all tenants with storage, or still auto selecting tenant only when there is only one available tenant?
 	if currentStorageTenants == nil {
@@ -175,15 +195,20 @@ func getCurrentStorageTenants() *StorageTenants {
 	return currentStorageTenants
 }
 
-// StorageList list registerd storage tenants
-func (s *TenantListener) StorageList(ctx context.Context, in *google_protobuf.Empty) (*pb.TenantList, error) {
-	log.Infoln("Listeners: receiving \"tenant storage-list\"")
-	log.Debugln(">>> TenantListener::StorageList()")
-	defer log.Debugln("<<< TenantListener::StorageList()")
+// StorageList lists registered storage tenants
+func (s *TenantListener) StorageList(ctx context.Context, in *google_protobuf.Empty) (tl *pb.TenantList, err error) {
+	if s == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, scerr.InvalidInstanceError().Error())
+	}
+
+	tracer := concurrency.NewTracer(nil, "", true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
 	ctx, cancelFunc := context.WithCancel(ctx)
-	if err := utils.ProcessRegister(ctx, cancelFunc, "Tenant StorageList"); err == nil {
-		defer utils.ProcessDeregister(ctx)
+	// FIXME: handle error
+	if err := srvutils.JobRegister(ctx, cancelFunc, "Tenant StorageList"); err == nil {
+		defer srvutils.JobDeregister(ctx)
 	}
 
 	tenants, err := iaas.GetTenants()
@@ -208,43 +233,56 @@ func (s *TenantListener) StorageList(ctx context.Context, in *google_protobuf.Em
 }
 
 // StorageGet returns the name of the current storage tenants used for data related commands
-func (s *TenantListener) StorageGet(ctx context.Context, in *google_protobuf.Empty) (*pb.TenantNameList, error) {
-	log.Infoln("Listeners: receiving \"tenant storage-get\"")
-	log.Debugln(">>> TenantListener::StorageGet()")
-	defer log.Debugln(">>> TenantListener::StorageGet()")
+func (s *TenantListener) StorageGet(ctx context.Context, in *google_protobuf.Empty) (tnl *pb.TenantNameList, err error) {
+	if s == nil {
+		return nil, status.Errorf(codes.InvalidArgument, scerr.InvalidInstanceError().Error())
+	}
+
+	tracer := concurrency.NewTracer(nil, "", true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
 	ctx, cancelFunc := context.WithCancel(ctx)
-	if err := utils.ProcessRegister(ctx, cancelFunc, "Tenant StorageGet"); err == nil {
-		defer utils.ProcessDeregister(ctx)
+	// FIXME: handle error
+	if err := srvutils.JobRegister(ctx, cancelFunc, "Tenant StorageGet"); err == nil {
+		defer srvutils.JobDeregister(ctx)
 	}
 
 	getCurrentStorageTenants()
 	if currentStorageTenants == nil {
 		log.Info("Can't get storage tenants: no tenant set")
-		return nil, grpc.Errorf(codes.FailedPrecondition, "can't get storage tenants: no tenant set")
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot get storage tenants: no tenant set")
 	}
 
 	return &pb.TenantNameList{Names: currentStorageTenants.names}, nil
 }
 
 // StorageSet set the tenants to use for data related commands
-func (s *TenantListener) StorageSet(ctx context.Context, in *pb.TenantNameList) (*google_protobuf.Empty, error) {
+func (s *TenantListener) StorageSet(ctx context.Context, in *pb.TenantNameList) (empty *google_protobuf.Empty, err error) {
+	empty = &google_protobuf.Empty{}
+	if s == nil {
+		return empty, status.Errorf(codes.FailedPrecondition, scerr.InvalidInstanceError().Error())
+	}
+	if in == nil {
+		return empty, status.Errorf(codes.InvalidArgument, scerr.InvalidParameterError("in", "cannot be nil").Error())
+	}
 
-	log.Infof("Listeners: receiving \"tenant storage-set %v\"", in.Names)
-	log.Debugf(">>> TenantListener::StorageSet(%v)", in.Names)
-	defer log.Debugf("<<< TenantListener::StorageSet(%v)", in.Names)
+	tracer := concurrency.NewTracer(nil, "", true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
 	ctx, cancelFunc := context.WithCancel(ctx)
-	if err := utils.ProcessRegister(ctx, cancelFunc, fmt.Sprintf("Tenant StorageSet %v", in.GetNames())); err == nil {
-		defer utils.ProcessDeregister(ctx)
+	// FIXME: handle error
+	if err := srvutils.JobRegister(ctx, cancelFunc, fmt.Sprintf("Tenant StorageSet %v", in.GetNames())); err == nil {
+		defer srvutils.JobDeregister(ctx)
 	}
 
 	storageServices, err := iaas.UseStorages(in.GetNames())
 	if err != nil {
-		return &google_protobuf.Empty{}, fmt.Errorf("Unable to set tenants '%v': %s", in.GetNames(), err.Error())
+		return empty, status.Errorf(codes.FailedPrecondition, fmt.Errorf("unable to set tenants '%v': %s", in.GetNames(), err.Error()).Error())
 	}
 
 	currentStorageTenants = &StorageTenants{names: in.GetNames(), StorageServices: storageServices}
 	log.Infof("Current storage tenants are now '%v'", in.GetNames())
-	return &google_protobuf.Empty{}, nil
+	return empty, nil
 }

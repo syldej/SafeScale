@@ -22,12 +22,12 @@ feature:
     requirements:
         features:
             - docker
-            - docker-compose
             - kong
+
     parameters:
         - KeepDataOnRemoval=yes
         - ClusterName=safescale
-    
+
     install:
         bash:
             check:
@@ -39,9 +39,9 @@ feature:
                             masters: all
                             nodes: no
                         run: |
-                            [ -d ${SF_ETC_DIR}/elassandra ] || exit 192
-                            docker image ls {{ "--format '{{.Repository}}:{{.Tag}}'" }} | grep 'strapdata/elassandra:6' &>/dev/null || exit 193
-                            exit 0
+                            [ -d ${SF_ETC_DIR}/elassandra ] || sfFail 192
+                            docker image ls {{ "--format '{{.Repository}}:{{.Tag}}'" }} | grep 'strapdata/elassandra:6' &>/dev/null || sfFail 193
+                            sfExit
 
             add:
                 pace: image,config,start,ready
@@ -91,7 +91,7 @@ feature:
                                     restart: always
 
                             EOF
-                            exit 0
+                            sfExit
 
                     start:
                         targets:
@@ -133,7 +133,7 @@ feature:
                             {{ else }}
                             OPTIONS=
                             {{ end }}
-                            docker-compose -f ${SF_ETCDIR}/elassandra/docker-compose.yml $OPTIONS rm --stop -v --force || exit 192
+                            docker-compose -f ${SF_ETCDIR}/elassandra/docker-compose.yml $OPTIONS rm --stop -v --force || sfFail 192
 
                     remove:
                         targets:
@@ -145,41 +145,41 @@ feature:
                             purge={{.KeepDataOnRemoval}}
                             purge=${purge,,}
                             [ "$purge" = "yes" ] && rm -rf ${SF_ETCDIR}/elassandra ${SF_VARDIR}/elassandra
-                            exit 0
+                            sfExit
 
     proxy:
         rules:
-            - name: elasticsearch_http_svc
+            - name: elassandra_http_svc
               type: service
               targets:
                   hosts: true
                   masters: all
               content: |
                   {
-                      "name": "elasticsearch_http_{{.Hostname}}",
+                      "name": "elassandra_http_{{.Hostname}}",
                       "url": "http://{{.HostIP}}:9200/"
                   }
 
-            - name: elasticsearch_transport_svc
+            - name: elassandra_transport_svc
               type: service
               targets:
                   hosts: true
                   masters: all
               content: |
                   {
-                      "name": "elasticsearch_transport_{{.Hostname}}",
+                      "name": "elassandra_transport_{{.Hostname}}",
                       "url": "http://{{.HostIP}}:9300/"
                   }
 
-            - name: elasticsearch_http_route
+            - name: elassandra_http_route
               type: route
               targets:
                   hosts: true
                   masters: all
               content: |
                   {
-                      "paths": ["/monitoring/elasticsearch/"],
-                      "service": { "id": "{{.elasticsearch_http_svc}}" }
+                      "paths": ["/elassandra/"],
+                      "service": { "id": "{{.elassandra_http_svc}}" }
                   }
 
 ...

@@ -19,6 +19,8 @@ package gcp
 import (
 	"fmt"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/objectstorage"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/providers"
@@ -32,6 +34,8 @@ import (
 // provider is the provider implementation of the Gcp provider
 type provider struct {
 	*gcp.Stack
+
+	tenantParameters map[string]interface{}
 }
 
 // New creates a new instance of gcp provider
@@ -45,42 +49,52 @@ func (p *provider) Build(params map[string]interface{}) (apiprovider.Provider, e
 
 	identityCfg, ok := params["identity"].(map[string]interface{})
 	if !ok {
-		return &provider{}, fmt.Errorf("Section identity not found in tenants.toml !!")
+		return &provider{}, fmt.Errorf("section identity not found in tenants.toml")
 	}
 
 	computeCfg, ok := params["compute"].(map[string]interface{})
 	if !ok {
-		return &provider{}, fmt.Errorf("Section compute not found in tenants.toml !!")
+		return &provider{}, fmt.Errorf("section compute not found in tenants.toml")
 	}
 
-	// FIXME Use the network to change default "safescale" network
-	// network, _ := params["network"].(map[string]interface{})
+	networkName := "safescale"
 
-	projectId, _ := identityCfg["project_id"].(string)
-	privateKeyId, _ := identityCfg["private_key_id"].(string)
+	networkCfg, ok := params["network"].(map[string]interface{})
+	if !ok {
+		logrus.Warnf("section network not found in tenants.toml !!")
+	} else {
+		newNetworkName, _ := networkCfg["ProviderNetwork"].(string)
+		if newNetworkName != "" {
+			networkName = newNetworkName
+		}
+	}
+
+	gcpprojectID, _ := identityCfg["project_id"].(string)
+	privateKeyID, _ := identityCfg["private_key_id"].(string)
 	privateKey, _ := identityCfg["private_key"].(string)
 	clientEmail, _ := identityCfg["client_email"].(string)
-	clientId, _ := identityCfg["client_id"].(string)
-	authUri, _ := identityCfg["auth_uri"].(string)
-	tokenUri, _ := identityCfg["token_uri"].(string)
+	clientID, _ := identityCfg["client_id"].(string)
+	authURI, _ := identityCfg["auth_uri"].(string)
+	tokenURI, _ := identityCfg["token_uri"].(string)
 	authProvider, _ := identityCfg["auth_provider_x509_cert_url"].(string)
-	clientCertUrl, _ := identityCfg["client_x509_cert_url"].(string)
+	clientCertURL, _ := identityCfg["client_x509_cert_url"].(string)
 	region, _ := computeCfg["Region"].(string)
 	zone, _ := computeCfg["Zone"].(string)
 
 	gcpConf := stacks.GCPConfiguration{
 		Type:         "service_account",
-		ProjectId:    projectId,
-		PrivateKeyId: privateKeyId,
+		ProjectID:    gcpprojectID,
+		PrivateKeyID: privateKeyID,
 		PrivateKey:   privateKey,
 		ClientEmail:  clientEmail,
-		ClientId:     clientId,
-		AuthUri:      authUri,
-		TokenUri:     tokenUri,
+		ClientID:     clientID,
+		AuthURI:      authURI,
+		TokenURI:     tokenURI,
 		AuthProvider: authProvider,
-		ClientCert:   clientCertUrl,
+		ClientCert:   clientCertURL,
 		Region:       region,
 		Zone:         zone,
+		NetworkName:  networkName,
 	}
 
 	username, _ := identityCfg["Username"].(string)
@@ -129,9 +143,16 @@ func (p *provider) Build(params map[string]interface{}) (apiprovider.Provider, e
 	if err != nil {
 		return nil, err
 	}
+	newP := &provider{
+		Stack:            stack,
+		tenantParameters: params,
+	}
 
-	etrace := apiprovider.NewErrorTraceProvider(&provider{stack}, "gcp")
-	prov := apiprovider.NewLoggedProvider(etrace, "gcp")
+	providerName := "gcp"
+
+	// evalid := apiprovider.NewValidatedProvider(p, providerName)
+	etrace := apiprovider.NewErrorTraceProvider(newP, providerName)
+	prov := apiprovider.NewLoggedProvider(etrace, providerName)
 	return prov, nil
 }
 
@@ -170,6 +191,16 @@ func (p *provider) GetName() string {
 // ListImages ...
 func (p *provider) ListImages(all bool) ([]resources.Image, error) {
 	return p.Stack.ListImages()
+}
+
+// GetTenantParameters returns the tenant parameters as-is
+func (p *provider) GetTenantParameters() map[string]interface{} {
+	return p.tenantParameters
+}
+
+// GetCapabilities returns the capabilities of the provider
+func (p *provider) GetCapabilities() providers.Capabilities {
+	return providers.Capabilities{}
 }
 
 func init() {

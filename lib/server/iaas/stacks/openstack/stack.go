@@ -19,16 +19,19 @@ package openstack
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 
+	"github.com/sirupsen/logrus"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/secgroups"
+	secgroups "github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/security/groups"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/networks"
 
 	"github.com/CS-SI/SafeScale/lib/server/iaas/stacks"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 )
 
 // ProviderErrorToString creates an error string from openstack api error
@@ -51,9 +54,43 @@ func ProviderErrorToString(err error) string {
 	case *gophercloud.ErrUnexpectedResponseCode:
 		return fmt.Sprintf("code: %d, reason: %s", e.Actual, string(e.Body[:]))
 	default:
-		// logrus.Debugf("Error code not yet handled specifically: ProviderErrorToString(%+v)\n", err)
+		logrus.Debugf("Error code not yet handled specifically: ProviderErrorToString(%s, %+v)\n", reflect.TypeOf(err).String(), err)
+
 		return e.Error()
 	}
+}
+
+// TranslateError translates gophercloud or openstack error to SafeScale error
+func TranslateError(err error) error {
+	switch e := err.(type) {
+	case gophercloud.ErrDefault401:
+		return scerr.UnauthorizedError(string(e.Body[:]))
+	case *gophercloud.ErrDefault401:
+		return scerr.UnauthorizedError(string(e.Body[:]))
+	case gophercloud.ErrDefault403:
+		return scerr.ForbiddenError(string(e.Body[:]))
+	case *gophercloud.ErrDefault403:
+		return scerr.ForbiddenError(string(e.Body[:]))
+	case gophercloud.ErrDefault404:
+		return scerr.NotFoundError(string(e.Body[:]))
+	case *gophercloud.ErrDefault404:
+		return scerr.NotFoundError(string(e.Body[:]))
+	case gophercloud.ErrDefault429:
+		return scerr.OverloadError(string(e.Body[:]))
+	case *gophercloud.ErrDefault429:
+		return scerr.OverloadError(string(e.Body[:]))
+	case gophercloud.ErrDefault500:
+		return scerr.InvalidRequestError(string(e.Body[:]))
+	case *gophercloud.ErrDefault500:
+		return scerr.InvalidRequestError(string(e.Body[:]))
+	case gophercloud.ErrUnexpectedResponseCode:
+		return fmt.Errorf("unexpected response code: code: %d, reason: %s", e.Actual, string(e.Body[:]))
+	case *gophercloud.ErrUnexpectedResponseCode:
+		return fmt.Errorf("unexpected response code: code: %d, reason: %s", e.Actual, string(e.Body[:]))
+	}
+
+	logrus.Debugf("Unhandled error (%s) received from provider: %s", reflect.TypeOf(err).String(), err.Error())
+	return fmt.Errorf("unhandled error received from provider: %s", err.Error())
 }
 
 // ParseNeutronError parses neutron json error and returns fields
@@ -101,9 +138,13 @@ type Stack struct {
 	authOpts stacks.AuthenticationOptions
 	cfgOpts  stacks.ConfigurationOptions
 
-	defaultSecurityGroupName string
-	SecurityGroup            *secgroups.SecurityGroup
-	ProviderNetworkID        string
+	// DefaultSecurityGroupName is the name of the default security groups
+	DefaultSecurityGroupName string
+	// DefaultSecurityGroupDescription contains a description for the default security groups
+	DefaultSecurityGroupDescription string
+	// SecurityGroup is an instance of the default security group
+	SecurityGroup     *secgroups.SecGroup
+	ProviderNetworkID string
 
 	// versions contains the last version supported for each service
 	versions map[string]string

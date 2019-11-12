@@ -19,6 +19,8 @@ package utils
 import (
 	"fmt"
 
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
+
 	"github.com/sethvargo/go-password/password"
 )
 
@@ -27,9 +29,9 @@ var generator *password.Generator
 // GeneratePassword generates a password with length at least 12
 func GeneratePassword(length uint8) (string, error) {
 	if length < 12 {
-		panic("length under 12!")
+		return "", scerr.InvalidParameterError("length", "cannot be under 12")
 	}
-	numsym := int(length) % 3
+	numsym := int(length) / 3
 	pass, err := generator.Generate(int(length), numsym, numsym, false, true)
 	if err != nil {
 		return "", err
@@ -45,15 +47,12 @@ func init() {
 	// - alphabetic characters that can moved between QWERTY and AZERTY: AaQqWwZz
 	// - symbols that can be difficult to find on different layouts, like: #_[]{}
 	generator, err = password.NewGenerator(&password.GeneratorInput{
-		// LowerLetters: "abcdefghjkmnopqrstuvwxyz",
-		// UpperLetters: "ABCDEFGHJKLMNPQRSTUVWXYZ",
 		LowerLetters: "bcdefghjknprstuvxy",
 		UpperLetters: "BCDEFGHJKLNPRSTUVXY",
 		Digits:       "123456789",
-		// Symbols:      "-+*/.,:()[]{}#_",
-		Symbols: "-+*/.,;:()_",
+		Symbols:      "-+*/.,:;()_",
 	})
 	if err != nil {
-		panic(fmt.Sprintf("Failed to create password generator: %v!", err))
+		panic(fmt.Sprintf("failed to create password generator: %v!", err))
 	}
 }

@@ -29,6 +29,7 @@ const (
 )
 
 //go:generate mockgen -destination=../mocks/mock_location.go -package=mocks github.com/CS-SI/SafeScale/lib/server/iaas/objectstorage Location
+
 // Location ...
 type Location interface {
 	// ReadTenant(projectName string, provider string) (Config, error)
@@ -81,6 +82,7 @@ type Location interface {
 }
 
 //go:generate mockgen -destination=../mocks/mock_bucket.go -package=mocks github.com/CS-SI/SafeScale/lib/server/iaas/objectstorage Bucket
+
 // Bucket interface
 type Bucket interface {
 	// List list object names in a Bucket
@@ -124,6 +126,7 @@ func (om ObjectMetadata) Clone() ObjectMetadata {
 }
 
 //go:generate mockgen -destination=../mocks/mock_object.go -package=mocks github.com/CS-SI/SafeScale/lib/server/iaas/objectstorage Object
+
 // Object interface
 type Object interface {
 	Stored() bool
@@ -145,23 +148,24 @@ type Object interface {
 	GetMetadata() ObjectMetadata
 }
 
-// FIXME GCP This is a problem
+// FIXME GCP Remove specific driver code
+
 // Config ...
 type Config struct {
-	Type         string
-	EnvAuth      bool
-	AuthVersion  int
-	AuthURL      string
-	EndpointType string
-	Endpoint     string
-	TenantDomain string
-	Tenant       string
-	Domain       string
-	User         string
-	Key          string
-	SecretKey    string
-	Region       string
+	Type             string
+	EnvAuth          bool
+	AuthVersion      int
+	AuthURL          string
+	EndpointType     string
+	Endpoint         string
+	TenantDomain     string
+	Tenant           string
+	Domain           string
+	User             string
+	Key              string
+	SecretKey        string
+	Region           string
 	AvailabilityZone string
-	ProjectId    string
-	Credentials  string
+	ProjectID        string
+	Credentials      string
 }

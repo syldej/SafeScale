@@ -21,13 +21,14 @@ import (
 
 	"github.com/CS-SI/SafeScale/lib/utils"
 	"github.com/CS-SI/SafeScale/lib/utils/retry/enums/Verdict"
+	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 )
 
 // Arbiter sleeps or selects any amount of time for each attempt.
 type Arbiter func(Try) (Verdict.Enum, error)
 
 // DefaultArbiter allows 10 retries, with a maximum duration of 30 seconds
-var DefaultArbiter = PrevailDone(Max(10), Timeout(utils.GetBigDelay()))
+var DefaultArbiter = PrevailDone(Max(10), Timeout(temporal.GetBigDelay()))
 
 // PrevailRetry aggregates verdicts from Arbiters for a try :
 // - Returns Abort and the error as soon as an arbiter decides for an Abort.
@@ -76,6 +77,14 @@ func PrevailDone(arbiters ...Arbiter) Arbiter {
 func Unsuccessful() Arbiter {
 	return func(t Try) (Verdict.Enum, error) {
 		if t.Err != nil {
+			if _, ok := t.Err.(ErrStopRetry); ok {
+				return Verdict.Done, t.Err
+			}
+
+			if _, ok := t.Err.(*ErrStopRetry); ok {
+				return Verdict.Done, t.Err
+			}
+
 			return Verdict.Retry, nil
 		}
 		return Verdict.Done, nil
@@ -87,6 +96,14 @@ func Unsuccessful() Arbiter {
 func UnsuccessfulWhereRetcode255() Arbiter {
 	return func(t Try) (Verdict.Enum, error) {
 		if t.Err != nil {
+			if _, ok := t.Err.(ErrStopRetry); ok {
+				return Verdict.Done, t.Err
+			}
+
+			if _, ok := t.Err.(*ErrStopRetry); ok {
+				return Verdict.Done, t.Err
+			}
+
 			_, retCode, _ := utils.ExtractRetCode(t.Err)
 			if retCode == 255 {
 				return Verdict.Retry, nil
@@ -100,6 +117,14 @@ func UnsuccessfulWhereRetcode255() Arbiter {
 func Successful() Arbiter {
 	return func(t Try) (Verdict.Enum, error) {
 		if t.Err == nil {
+			if _, ok := t.Err.(ErrStopRetry); ok {
+				return Verdict.Done, t.Err
+			}
+
+			if _, ok := t.Err.(*ErrStopRetry); ok {
+				return Verdict.Done, t.Err
+			}
+
 			return Verdict.Retry, nil
 		}
 		return Verdict.Done, nil
@@ -110,8 +135,16 @@ func Successful() Arbiter {
 func Timeout(limit time.Duration) Arbiter {
 	return func(t Try) (Verdict.Enum, error) {
 		if t.Err != nil {
+			if _, ok := t.Err.(ErrStopRetry); ok {
+				return Verdict.Done, t.Err
+			}
+
+			if _, ok := t.Err.(*ErrStopRetry); ok {
+				return Verdict.Done, t.Err
+			}
+
 			if time.Since(t.Start) >= limit {
-				return Verdict.Abort, TimeoutError(limit)
+				return Verdict.Abort, TimeoutError(limit, t.Err)
 			}
 			return Verdict.Retry, nil
 		}
@@ -123,8 +156,16 @@ func Timeout(limit time.Duration) Arbiter {
 func Max(limit uint) Arbiter {
 	return func(t Try) (Verdict.Enum, error) {
 		if t.Err != nil {
+			if _, ok := t.Err.(ErrStopRetry); ok {
+				return Verdict.Done, t.Err
+			}
+
+			if _, ok := t.Err.(*ErrStopRetry); ok {
+				return Verdict.Done, t.Err
+			}
+
 			if t.Count >= limit {
-				return Verdict.Abort, LimitError(limit)
+				return Verdict.Abort, LimitError(limit, t.Err)
 			}
 			return Verdict.Retry, nil
 		}

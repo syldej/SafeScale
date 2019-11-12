@@ -17,16 +17,16 @@
 package metadata
 
 import (
-	"fmt"
-
-	log "github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus"
 
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
-	"github.com/CS-SI/SafeScale/lib/utils"
+	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
 	"github.com/CS-SI/SafeScale/lib/utils/metadata"
 	"github.com/CS-SI/SafeScale/lib/utils/retry"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 	"github.com/CS-SI/SafeScale/lib/utils/serialize"
+	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 )
 
 const (
@@ -42,16 +42,21 @@ type Host struct {
 }
 
 // NewHost creates an instance of api.Host
-func NewHost(svc iaas.Service) *Host {
-	return &Host{
-		item: metadata.NewItem(svc, hostsFolderName),
+func NewHost(svc iaas.Service) (*Host, error) {
+	aHost, err := metadata.NewItem(svc, hostsFolderName)
+	if err != nil {
+		return nil, err
 	}
+
+	return &Host{
+		item: aHost,
+	}, nil
 }
 
 // Carry links an host instance to the Metadata instance
-func (mh *Host) Carry(host *resources.Host) *Host {
+func (mh *Host) Carry(host *resources.Host) (*Host, error) {
 	if host == nil {
-		panic("host is nil!")
+		return nil, scerr.InvalidParameterError("host", "cannot be nil!")
 	}
 	if host.Properties == nil {
 		host.Properties = serialize.NewJSONProperties("resources")
@@ -59,38 +64,69 @@ func (mh *Host) Carry(host *resources.Host) *Host {
 	mh.item.Carry(host)
 	mh.name = &host.Name
 	mh.id = &host.ID
-	return mh
+	return mh, nil
 }
 
 // Get returns the Network instance linked to metadata
-func (mh *Host) Get() *resources.Host {
-	if mh.item == nil {
-		panic("m.item is nil!")
+func (mh *Host) Get() (*resources.Host, error) {
+	if mh == nil {
+		return nil, scerr.InvalidInstanceError()
 	}
-	return mh.item.Get().(*resources.Host)
+	if mh.item == nil {
+		return nil, scerr.InvalidParameterError("mh.item", "cannot be nil")
+	}
+
+	gh := mh.item.Get().(*resources.Host)
+	return gh, nil
 }
 
 // Write updates the metadata corresponding to the host in the Object Storage
-func (mh *Host) Write() error {
+func (mh *Host) Write() (err error) {
+	if mh == nil {
+		return scerr.InvalidInstanceError()
+	}
 	if mh.item == nil {
-		panic("m.item is nil!")
+		return scerr.InvalidParameterError("m.item", "cannot be nil")
 	}
 
-	err := mh.item.WriteInto(ByNameFolderName, *mh.name)
+	tracer := concurrency.NewTracer(nil, "('"+*mh.id+"')", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	err = mh.item.WriteInto(ByNameFolderName, *mh.name)
 	if err != nil {
 		return err
 	}
 	return mh.item.WriteInto(ByIDFolderName, *mh.id)
 }
 
+// ReadByReference ...
+func (mh *Host) ReadByReference(id string) (err error) {
+	errID := mh.ReadByID(id)
+	if errID != nil {
+		errName := mh.ReadByName(id)
+		if errName != nil {
+			return errName
+		}
+	}
+	return nil
+}
+
 // ReadByID reads the metadata of a network identified by ID from Object Storage
-func (mh *Host) ReadByID(id string) error {
+func (mh *Host) ReadByID(id string) (err error) {
 	if mh.item == nil {
-		panic("m.item is nil!")
+		return scerr.InvalidInstanceError()
+	}
+	if id == "" {
+		return scerr.InvalidParameterError("id", "cannot be empty string")
 	}
 
+	tracer := concurrency.NewTracer(nil, "("+id+")", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogErrorWithLevel(tracer.TraceMessage(""), &err, logrus.TraceLevel)()
+
 	host := resources.NewHost()
-	err := mh.item.ReadFrom(ByIDFolderName, id, func(buf []byte) (serialize.Serializable, error) {
+	err = mh.item.ReadFrom(ByIDFolderName, id, func(buf []byte) (serialize.Serializable, error) {
 		err := host.Deserialize(buf)
 		if err != nil {
 			return nil, err
@@ -105,14 +141,24 @@ func (mh *Host) ReadByID(id string) error {
 	return nil
 }
 
-// ReadByName reads the metadata of a network identified by name
-func (mh *Host) ReadByName(name string) error {
+// ReadByName reads the metadata of a host identified by name
+func (mh *Host) ReadByName(name string) (err error) {
+	if mh == nil {
+		return scerr.InvalidInstanceError()
+	}
 	if mh.item == nil {
-		panic("m.item is nil!")
+		return scerr.InvalidParameterError("mh.item", "cannot be nil")
+	}
+	if name == "" {
+		return scerr.InvalidParameterError("name", "cannot be empty string")
 	}
 
+	tracer := concurrency.NewTracer(nil, "("+name+")", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogErrorWithLevel(tracer.TraceMessage(""), &err, logrus.TraceLevel)()
+
 	host := resources.NewHost()
-	err := mh.item.ReadFrom(ByNameFolderName, name, func(buf []byte) (serialize.Serializable, error) {
+	err = mh.item.ReadFrom(ByNameFolderName, name, func(buf []byte) (serialize.Serializable, error) {
 		err := host.Deserialize(buf)
 		if err != nil {
 			return nil, err
@@ -127,25 +173,46 @@ func (mh *Host) ReadByName(name string) error {
 	return nil
 }
 
-// Delete updates the metadata corresponding to the network
-func (mh *Host) Delete() error {
+// Delete updates the metadata corresponding to the host
+func (mh *Host) Delete() (err error) {
+	if mh == nil {
+		return scerr.InvalidInstanceError()
+	}
 	if mh.item == nil {
-		panic("mh.item is nil!")
+		return scerr.InvalidParameterError("mh.item", "cannot be nil")
 	}
 
-	err := mh.item.DeleteFrom(ByIDFolderName, *mh.id)
-	if err != nil {
-		return err
+	tracer := concurrency.NewTracer(nil, "", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogErrorWithLevel(tracer.TraceMessage(""), &err, logrus.TraceLevel)()
+
+	// FIXME Merge errors
+	err1 := mh.item.DeleteFrom(ByIDFolderName, *mh.id)
+	err2 := mh.item.DeleteFrom(ByNameFolderName, *mh.name)
+
+	if err1 != nil {
+		return err1
 	}
-	err = mh.item.DeleteFrom(ByNameFolderName, *mh.name)
 	if err != nil {
-		return err
+		return err2
 	}
+
 	return nil
 }
 
 // Browse walks through host folder and executes a callback for each entries
-func (mh *Host) Browse(callback func(*resources.Host) error) error {
+func (mh *Host) Browse(callback func(*resources.Host) error) (err error) {
+	if mh == nil {
+		return scerr.InvalidInstanceError()
+	}
+	if mh.item == nil {
+		return scerr.InvalidParameterError("mh.item", "cannot be nil")
+	}
+
+	tracer := concurrency.NewTracer(nil, "", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogErrorWithLevel(tracer.TraceMessage(""), &err, logrus.TraceLevel)()
+
 	return mh.item.BrowseInto(ByIDFolderName, func(buf []byte) error {
 		host := resources.NewHost()
 		err := host.Deserialize(buf)
@@ -157,9 +224,29 @@ func (mh *Host) Browse(callback func(*resources.Host) error) error {
 }
 
 // SaveHost saves the Host definition in Object Storage
-func SaveHost(svc iaas.Service, host *resources.Host) (*Host, error) {
-	mh := NewHost(svc)
-	err := mh.Carry(host).Write()
+func SaveHost(svc iaas.Service, host *resources.Host) (mh *Host, err error) {
+	if svc == nil {
+		return nil, scerr.InvalidParameterError("svc", "cannot be nil")
+	}
+	if host == nil {
+		return nil, scerr.InvalidParameterError("host", "cannot be nil")
+	}
+
+	tracer := concurrency.NewTracer(nil, "", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogErrorWithLevel(tracer.TraceMessage(""), &err, logrus.TraceLevel)()
+
+	mh, err = NewHost(svc)
+	if err != nil {
+		return nil, err
+	}
+
+	ch, err := mh.Carry(host)
+	if err != nil {
+		return nil, err
+	}
+
+	err = ch.Write()
 	if err != nil {
 		return nil, err
 	}
@@ -185,76 +272,77 @@ func SaveHost(svc iaas.Service, host *resources.Host) (*Host, error) {
 }
 
 // RemoveHost removes the host definition from Object Storage
-func RemoveHost(svc iaas.Service, host *resources.Host) error {
-	// // First, browse networks to delete links on the deleted host
-	// mn := NewNetwork(svc)
-	// mnb := NewNetwork(svc)
-	// err := mn.Browse(func(network *resources.Network) error {
-	// 	nerr := mnb.Carry(network).DetachHost(host.ID)
-	// 	if nerr != nil {
-	// 		if strings.Contains(nerr.Error(), "failed to remove metadata in Object Storage") {
-	// 			log.Debugf("Error while browsing network: %v", nerr)
-	// 		} else {
-	// 			log.Warnf("Error while browsing network: %v", nerr)
-	// 		}
-	// 	}
-	// 	return nil
-	// })
-	// if err != nil {
-	// 	return err
-	// }
+func RemoveHost(svc iaas.Service, host *resources.Host) (err error) {
+	if svc == nil {
+		return scerr.InvalidParameterError("svc", "cannot be nil")
+	}
+	if host == nil {
+		return scerr.InvalidParameterError("host", "cannot be nil")
+	}
+
+	tracer := concurrency.NewTracer(nil, "", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogErrorWithLevel(tracer.TraceMessage(""), &err, logrus.TraceLevel)()
 
 	// Second deletes host metadata
-	mh := NewHost(svc)
-	return mh.Carry(host).Delete()
+	mh, err := NewHost(svc)
+	if err != nil {
+		return err
+	}
+
+	ch, err := mh.Carry(host)
+	if err != nil {
+		return err
+	}
+
+	return ch.Delete()
 }
 
 // LoadHost gets the host definition from Object Storage
 // logic: Read by ID; if error is ErrNotFound then read by name; if error is ErrNotFound return this error
 //        In case of any other error, abort the retry to propagate the error
 //        If retry times out, return errNotFound
-func LoadHost(svc iaas.Service, ref string) (*Host, error) {
+func LoadHost(svc iaas.Service, ref string) (mh *Host, err error) {
+	if svc == nil {
+		return nil, scerr.InvalidParameterError("svc", "cannot be nil")
+	}
+	if ref == "" {
+		return nil, scerr.InvalidParameterError("ref", "cannot be empty string")
+	}
+
+	tracer := concurrency.NewTracer(nil, "("+ref+")", true)
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogErrorWithLevel(tracer.TraceMessage(""), &err, logrus.TraceLevel)()
+
 	// We first try looking for host by ID from metadata
-	mh := NewHost(svc)
-	var innerErr error
-	err := retry.WhileUnsuccessfulDelay1Second(
-		func() error {
-			innerErr = mh.ReadByID(ref)
-			if innerErr != nil {
-				if _, ok := innerErr.(utils.ErrNotFound); ok {
-					innerErr = mh.ReadByName(ref)
-					if innerErr != nil {
-						if _, ok := innerErr.(utils.ErrNotFound); ok {
-							log.Debugf("LoadHost(): %v", innerErr)
-							log.Debugf("LoadHost(): retrying in 1 second")
-							return innerErr
-						}
-					}
-				}
-			}
-			// // In case of inconsistency in Object Storage (had happened in the past...)
-			// host := mh.Get()
-			// ip := host.GetAccessIP()
-			// if ip == "" {
-			// 	log.Warnf("Host metadata inconsistent, AccessIP is empty. Retrying")
-			// 	return fmt.Errorf("host metadata inconsistent, AccessIP is empty")
-			// }
-			return nil
-		},
-		2*utils.GetDefaultDelay(),
-	)
-	// If retry timed out, log it and return error ErrNotFound
+	mh, err = NewHost(svc)
 	if err != nil {
-		if _, ok := err.(retry.ErrTimeout); ok {
-			log.Debugf("timeout reading metadata of host '%s'", ref)
-			return nil, utils.NotFoundError(fmt.Sprintf("failed to load metadata of host '%s'", ref))
-		}
 		return nil, err
 	}
-	// Returns the error different than ErrNotFound to caller
-	if innerErr != nil {
-		return nil, innerErr
+
+	retryErr := retry.WhileUnsuccessfulDelay1Second(
+		func() error {
+			innerErr := mh.ReadByReference(ref)
+			if innerErr != nil {
+				if _, ok := innerErr.(scerr.ErrNotFound); ok {
+					return retry.StopRetryError("no metadata found", innerErr)
+				}
+
+				return innerErr
+			}
+			return nil
+		},
+		2*temporal.GetDefaultDelay(),
+	)
+	if retryErr != nil {
+		// If it's not a timeout is something we don't know how to handle yet
+		if _, ok := retryErr.(scerr.ErrTimeout); !ok {
+			return nil, scerr.Cause(retryErr)
+		}
+
+		return nil, retryErr
 	}
+
 	return mh, nil
 }
 

@@ -24,6 +24,8 @@ import (
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/objectstorage"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
+	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 )
 
 //go:generate mockgen -destination=../mocks/mock_bucketapi.go -package=mocks github.com/CS-SI/SafeScale/lib/server/handlers BucketAPI
@@ -49,66 +51,97 @@ func NewBucketHandler(svc iaas.Service) BucketAPI {
 }
 
 // List retrieves all available buckets
-func (handler *BucketHandler) List(ctx context.Context) ([]string, error) {
-	rv, err := handler.service.ListBuckets(objectstorage.RootPath)
-	return rv, infraErr(err)
+func (handler *BucketHandler) List(ctx context.Context) (rv []string, err error) {
+	if handler == nil {
+		return nil, scerr.InvalidInstanceError()
+	}
+
+	tracer := concurrency.NewTracer(nil, "", true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	rv, err = handler.service.ListBuckets(objectstorage.RootPath)
+	return rv, err
 }
 
 // Create a bucket
-func (handler *BucketHandler) Create(ctx context.Context, name string) error {
+func (handler *BucketHandler) Create(ctx context.Context, name string) (err error) {
+	if handler == nil {
+		return scerr.InvalidInstanceError()
+	}
+	if name == "" {
+		return scerr.InvalidParameterError("name", "cannot be empty string")
+	}
+
+	tracer := concurrency.NewTracer(nil, "('"+name+"')", true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
 	bucket, err := handler.service.GetBucket(name)
 	if err != nil {
 		if err.Error() != "not found" {
-			return infraErrf(err, "failed to search of bucket '%s' already exists", name)
+			return err
 		}
 	}
 	if bucket != nil {
-		return logicErr(resources.ResourceDuplicateError("bucket", name))
+		return resources.ResourceDuplicateError("bucket", name)
 	}
 	_, err = handler.service.CreateBucket(name)
 	if err != nil {
-		return infraErrf(err, "failed to create bucket '%s'", name)
+		return err
 	}
 	return nil
 }
 
 // Delete a bucket
-func (handler *BucketHandler) Delete(ctx context.Context, name string) error {
-	err := handler.service.DeleteBucket(name)
+func (handler *BucketHandler) Delete(ctx context.Context, name string) (err error) {
+	tracer := concurrency.NewTracer(nil, "('"+name+"')", true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	err = handler.service.DeleteBucket(name)
 	if err != nil {
-		return infraErrf(err, "failed to delete bucket '%s'", name)
+		return err
 	}
 	return nil
 }
 
 // Inspect a bucket
-func (handler *BucketHandler) Inspect(ctx context.Context, name string) (*resources.Bucket, error) {
+func (handler *BucketHandler) Inspect(ctx context.Context, name string) (mb *resources.Bucket, err error) {
+	tracer := concurrency.NewTracer(nil, "('"+name+"')", true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
 	b, err := handler.service.GetBucket(name)
 	if err != nil {
 		if err.Error() == "not found" {
-			return nil, logicErr(resources.ResourceNotFoundError("bucket", name))
+			return nil, resources.ResourceNotFoundError("bucket", name)
 		}
-		return nil, infraErrf(err, "failed to inspect bucket '%s'", name)
+		return nil, err
 	}
-	mb := resources.Bucket{
+	mb = &resources.Bucket{
 		Name: b.GetName(),
 	}
-	return &mb, nil
+	return mb, nil
 }
 
 // Mount a bucket on an host on the given mount point
-func (handler *BucketHandler) Mount(ctx context.Context, bucketName, hostName, path string) error {
+func (handler *BucketHandler) Mount(ctx context.Context, bucketName, hostName, path string) (err error) {
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s', '%s', '%s')", bucketName, hostName, path), true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
 	// Check bucket existence
-	_, err := handler.service.GetBucket(bucketName)
+	_, err = handler.service.GetBucket(bucketName)
 	if err != nil {
-		return infraErr(err)
+		return err
 	}
 
 	// Get Host ID
 	hostHandler := NewHostHandler(handler.service)
 	host, err := hostHandler.Inspect(ctx, hostName)
 	if err != nil {
-		return logicErr(fmt.Errorf("no host found with name or id '%s'", hostName))
+		return fmt.Errorf("no host found with name or id '%s'", hostName)
 	}
 
 	// Create mount point
@@ -156,28 +189,32 @@ func (handler *BucketHandler) Mount(ctx context.Context, bucketName, hostName, p
 	}
 
 	rerr := exec(ctx, "mount_object_storage.sh", data, host.ID, handler.service)
-	return logicErr(rerr)
+	return rerr
 }
 
 // Unmount a bucket
-func (handler *BucketHandler) Unmount(ctx context.Context, bucketName, hostName string) error {
+func (handler *BucketHandler) Unmount(ctx context.Context, bucketName, hostName string) (err error) {
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s', '%s')", bucketName, hostName), true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
 	// Check bucket existence
-	_, err := handler.Inspect(ctx, bucketName)
+	_, err = handler.Inspect(ctx, bucketName)
 	if err != nil {
-		if _, ok := err.(resources.ErrResourceNotFound); ok {
+		if _, ok := err.(scerr.ErrNotFound); ok {
 			return err
 		}
-		return infraErr(err)
+		return err
 	}
 
 	// Get Host ID
 	hostHandler := NewHostHandler(handler.service)
 	host, err := hostHandler.Inspect(ctx, hostName)
 	if err != nil {
-		if _, ok := err.(resources.ErrResourceNotFound); ok {
+		if _, ok := err.(scerr.ErrNotFound); ok {
 			return err
 		}
-		return infraErrf(err, "failed to get host '%s':", hostName)
+		return err
 	}
 
 	data := struct {
@@ -187,5 +224,5 @@ func (handler *BucketHandler) Unmount(ctx context.Context, bucketName, hostName 
 	}
 
 	rerr := exec(ctx, "umount_object_storage.sh", data, host.ID, handler.service)
-	return infraErr(rerr)
+	return rerr
 }

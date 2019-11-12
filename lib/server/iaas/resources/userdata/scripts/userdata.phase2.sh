@@ -19,10 +19,12 @@
 print_error() {
     read line file <<<$(caller)
     echo "An error occurred in line $line of file $file:" "{"`sed "${line}q;d" "$file"`"}" >&2
+    {{.ExitOnError}}
 }
 trap print_error ERR
 
 fail() {
+    echo "PROVISIONING_ERROR: $1"
     echo -n "$1,${LINUX_KIND},$(date +%Y/%m/%d-%H:%M:%S)" >/opt/safescale/var/state/user_data.phase2.done
     # For compatibility with previous user_data implementation (until v19.03.x)...
     ln -s ${SF_VARDIR}/state/user_data.phase2.done /var/tmp/user_data.done
@@ -108,9 +110,9 @@ o_PR_IF=
 # Don't update default route
 configure_dhclient() {
     # kill any dhclient process already running
-    pkill dhclient
+    pkill dhclient || true
 
-    [ -f /etc/dhcp/dhclient.conf ] && sed -i -e 's/, domain-name-servers//g' /etc/dhcp/dhclient.conf
+    [ -f /etc/dhcp/dhclient.conf ] && (sed -i -e 's/, domain-name-servers//g' /etc/dhcp/dhclient.conf || true)
 
     if [ -d /etc/dhcp/ ]; then
         HOOK_FILE=/etc/dhcp/dhclient-enter-hooks
@@ -150,25 +152,29 @@ identify_nics() {
     NICS=${NICS/[[:cntrl:]]/ }
 
     for IF in $NICS; do
-        IP=$(ip a | grep $IF | grep inet | awk '{print $2}' | cut -d '/' -f1)
+        IP=$(ip a | grep $IF | grep inet | awk '{print $2}' | cut -d '/' -f1) || true
         [ ! -z $IP ] && is_ip_private $IP && PR_IFs="$PR_IFs $IF"
     done
-    PR_IFs=$(echo $PR_IFs | xargs)
-    PU_IF=$(ip route get 8.8.8.8 | awk -F"dev " 'NR==1{split($2,a," ");print a[1]}' 2>/dev/null)
-    PU_IP=$(ip a | grep $PU_IF | grep inet | awk '{print $2}' | cut -d '/' -f1)
+    PR_IFs=$(echo $PR_IFs | xargs) || true
+    PU_IF=$(ip route get 8.8.8.8 | awk -F"dev " 'NR==1{split($2,a," ");print a[1]}' 2>/dev/null) || true
+    PU_IP=$(ip a | grep $PU_IF | grep inet | awk '{print $2}' | cut -d '/' -f1) || true
     if [ ! -z $PU_IP ]; then
         if is_ip_private $PU_IP; then
             PU_IF=
 
-            NO404=$(curl -s -o /dev/null -w "%{http_code}" http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null | grep 404)
+            NO404=$(curl -s -o /dev/null -w "%{http_code}" http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null | grep 404) || true
             if [ -z $NO404 ]; then
                 # Works with FlexibleEngine and potentially with AWS (not tested yet)
-                PU_IP=$(curl http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null)
+                PU_IP=$(curl http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null) || true
                 [ -z $PU_IP ] && PU_IP=$(curl ipinfo.io/ip 2>/dev/null)
             fi
         fi
     fi
     [ -z $PR_IFs ] && PR_IFs=$(substring_diff "$NICS" "$PU_IF")
+
+    # Keeps track of interfaces identified for future scripting use
+    echo "$PR_IFs" >${SF_VARDIR}/state/private_nics
+    echo "$PU_IF" >${SF_VARDIR}/state/public_nics
 
     echo "NICS identified: $NICS"
     echo "    private NIC(s): $PR_IFs"
@@ -186,7 +192,7 @@ substring_diff() {
 ensure_network_connectivity() {
     {{- if .AddGateway }}
         route del -net default &>/dev/null
-        route add -net default gw {{ .GatewayIP }}
+        route add -net default gw {{ .DefaultRouteIP }}
     {{- else }}
     :
     {{- end}}
@@ -211,7 +217,7 @@ configure_network() {
                 configure_network_debian
             else
                 echo "PROVISIONING_ERROR: failed to determine how to configure network"
-                fail 196
+                fail 192
             fi
             ;;
 
@@ -225,18 +231,19 @@ configure_network() {
             ;;
 
         *)
-            echo "Unsupported Linux distribution '$LINUX_KIND'!"
-            fail 197
+            echo "PROVISIONING_ERROR: Unsupported Linux distribution '$LINUX_KIND'!"
+            fail 193
             ;;
     esac
 
     {{- if .IsGateway }}
-    configure_as_gateway
+    configure_as_gateway || fail 194
+    install_keepalived || fail 195
     {{- end }}
 
     check_for_network || {
         echo "PROVISIONING_ERROR: missing or incomplete network connectivity"
-        fail 217
+        fail 196
     }
 }
 
@@ -260,7 +267,7 @@ EOF
 auto ${IF}
 iface ${IF} inet dhcp
 {{- if .AddGateway }}
-  up route add -net default gw {{ .GatewayIP }} || true
+  up route add -net default gw {{ .DefaultRouteIP }} || true
 {{- end}}
 EOF
         fi
@@ -317,7 +324,7 @@ network:
         use-routes: false
       routes:
       - to: 0.0.0.0/0
-        via: {{ .GatewayIP }}
+        via: {{ .DefaultRouteIP }}
         scope: global
         on-link: true
 {{- else }}
@@ -398,7 +405,7 @@ EOF
     configure_dhclient
 
     {{- if .AddGateway }}
-    echo "GATEWAY={{ .GatewayIP }}" >/etc/sysconfig/network
+    echo "GATEWAY={{ .DefaultRouteIP }}" >/etc/sysconfig/network
     {{- end }}
 
     enable_svc network
@@ -411,7 +418,7 @@ EOF
 
 check_for_ip() {
     ip=$(ip -f inet -o addr show $1 | cut -d' ' -f7 | cut -d' ' -f1)
-    [ -z "$ip" ] && return 1
+    [ -z "$ip" ] && echo "Failure checking for ip '$ip' when evaluating '$1'" && return 1
     return 0
 }
 
@@ -419,7 +426,11 @@ check_for_ip() {
 # - DNS and routes (by pinging a FQDN)
 # - IP address on "physical" interfaces
 check_for_network() {
-    ping -n -c1 -w30 -i5 www.google.com || return 1
+    if which wget; then
+      wget -T 30 -O /dev/null www.google.com &>/dev/null || return 1
+    else
+      ping -n -c1 -w30 -i5 www.google.com || return 1
+    fi
     [ ! -z "$PU_IF" ] && {
         check_for_ip $PU_IF || return 1
     }
@@ -438,23 +449,26 @@ configure_as_gateway() {
             grep -v "net.ipv4.ip_forward=" $i >${i}.new
             mv -f ${i}.new ${i}
         done
-        echo "net.ipv4.ip_forward=1" >/etc/sysctl.d/98-forward.conf
-        systemctl restart systemd-sysctl
+        cat >/etc/sysctl.d/21-gateway.conf <<-EOF
+net.ipv4.ip_forward=1
+net.ipv4.ip_nonlocal_bind=1
+EOF
+        case $LINUX_KIND in
+            ubuntu) systemctl restart systemd-sysctl;;
+            *)      sysctl -p;;
+        esac
     fi
 
-    [ ! -z $PU_IF ] && {
+    if [ ! -z $PU_IF ]; then
         # Dedicated public interface available...
 
         # Allows ping
         sfFirewallAdd --direct --add-rule ipv4 filter INPUT 0 -p icmp -m icmp --icmp-type 8 -s 0.0.0.0/0 -d 0.0.0.0/0 -j ACCEPT
-        # Allow smasquerading on public zone
+        # Allows masquerading on public zone
         sfFirewallAdd --zone=public --add-masquerade
-    } || {
-        # No dedicated public interface...
-
-        # Enables masquerading on trusted zone
-        sfFirewallAdd --zone=trusted --add-masquerade
-    }
+    fi
+    # Enables masquerading on trusted zone (mainly for docker networks)
+    sfFirewallAdd --zone=trusted --add-masquerade
 
     # Allows default services on public zone
     sfFirewallAdd --zone=public --add-service=ssh 2>/dev/null
@@ -464,9 +478,97 @@ configure_as_gateway() {
     grep -vi AllowTcpForwarding /etc/ssh/sshd_config >/etc/ssh/sshd_config.new
     echo "AllowTcpForwarding yes" >>/etc/ssh/sshd_config.new
     mv /etc/ssh/sshd_config.new /etc/ssh/sshd_config
-    systemctl restart ssh
+    systemctl restart sshd
 
     echo done
+}
+
+install_keepalived() {
+    case $LINUX_KIND in
+        ubuntu|debian)
+            sfApt update && sfApt -y install keepalived || return 1
+            ;;
+
+        redhat|centos)
+            yum install -q -y keepalived || return 1
+            ;;
+        *)
+            echo "Unsupported Linux distribution '$LINUX_KIND'!"
+            return 1
+            ;;
+    esac
+
+    NETMASK=$(echo {{ .CIDR }} | cut -d/ -f2)
+
+    cat >/etc/keepalived/keepalived.conf <<-EOF
+vrrp_instance vrrp_group_gws_internal {
+    state BACKUP
+    interface ${PR_IFs[0]}
+    virtual_router_id 1
+    priority {{ if eq .IsPrimaryGateway true }}151{{ else }}100{{ end }}
+    nopreempt
+    advert_int 2
+    authentication {
+        auth_type PASS
+        auth_pass password
+    }
+{{ if eq .IsPrimaryGateway true }}
+    # Unicast specific option, this is the IP of the interface keepalived listens on
+    unicast_src_ip {{ .PrimaryGatewayPrivateIP }}
+    # Unicast specific option, this is the IP of the peer instance
+    unicast_peer {
+        {{ .SecondaryGatewayPrivateIP }}
+    }
+{{ else }}
+    unicast_src_ip {{ .SecondaryGatewayPrivateIP }}
+    unicast_peer {
+        {{ .PrimaryGatewayPrivateIP }}
+    }
+{{ end }}
+    virtual_ipaddress {
+        {{ .PrivateVIP }}/${NETMASK}
+    }
+}
+
+# vrrp_instance vrrp_group_gws_external {
+#     state BACKUP
+#     interface ${PU_IF}
+#     virtual_router_id 2
+#     priority {{ if eq .IsPrimaryGateway true }}151{{ else }}100{{ end }}
+#     nopreempt
+#     advert_int 2
+#     authentication {
+#         auth_type PASS
+#         auth_pass password
+#     }
+#     virtual_ipaddress {
+#         {{ .PublicVIP }}/${NETMASK}
+#     }
+# }
+EOF
+
+    if [ "$(sfGetFact "use_systemd")" = "1" ]; then
+        # Use systemd to ensure keepalived is restarted if network is restarted
+        # (otherwise, keepalived is in undetermined state)
+        mkdir -p /etc/systemd/system/keepalived.service.d
+        if [ "$(sfGetFact "redhat_like")" = "1" ]; then
+            cat >/etc/systemd/system/keepalived.service.d/override.conf <<EOF
+[Unit]
+Requires=network.service
+PartOf=network.service
+EOF
+        else
+            cat >/etc/systemd/system/keepalived.service.d/override.conf <<EOF
+[Unit]
+Requires=systemd-networkd.service
+PartOf=systemd-networkd.service
+EOF
+        fi
+        systemctl daemon-reload
+    fi
+
+    sfService enable keepalived && sfService restart keepalived || return 1
+    return 0
 }
 
 configure_dns_legacy() {
@@ -521,7 +623,7 @@ EOF
 configure_dns_systemd_resolved() {
     echo "Configuring systemd-resolved..."
 
-{{- if not .GatewayIP }}
+{{- if not .DefaultRouteIP }}
     rm -f /etc/resolv.conf
     ln -s /run/systemd/resolve/resolv.conf /etc
 {{- end }}
@@ -580,7 +682,7 @@ install_drivers_nvidia() {
             rm -f NVIDIA-Linux-x86_64-410.78.run
             ;;
         *)
-            echo "Unsupported Linux distribution '$LINUX_KIND'!"
+            echo "PROVISIONING_ERROR: Unsupported Linux distribution '$LINUX_KIND'!"
             fail 209
             ;;
     esac
@@ -606,7 +708,7 @@ EOF
 
             sfApt update
             # Force update of systemd, pciutils
-            sfApt install -qy systemd pciutils || fail 211
+            sfApt install -qy systemd pciutils || fail 210
             # systemd, if updated, is restarted, so we may need to ensure again network connectivity
             ensure_network_connectivity
             ;;
@@ -619,10 +721,10 @@ EOF
 
             sfApt update
             # Force update of systemd, pciutils and netplan
-            if dpkg --compare-versions $(sfGetFact "linux version") ge 17.10; then
+            if dpkg --compare-versions $(sfGetFact "linux_version") ge 17.10; then
                 sfApt install -y systemd pciutils netplan.io || fail 211
             else
-                sfApt install -y systemd pciutils || fail 211
+                sfApt install -y systemd pciutils || fail 212
             fi
             # systemd, if updated, is restarted, so we may need to ensure again network connectivity
             ensure_network_connectivity
@@ -636,7 +738,7 @@ EOF
             # echo "ip_resolve=4" >>/etc/yum.conf
 
             # Force update of systemd and pciutils
-            yum install -qy systemd pciutils yum-utils || fail 211
+            yum install -qy systemd pciutils yum-utils || fail 213
             # systemd, if updated, is restarted, so we may need to ensure again network connectivity
             ensure_network_connectivity
 
@@ -650,14 +752,14 @@ EOF
 install_packages() {
      case $LINUX_KIND in
         ubuntu|debian)
-            sfApt install -y -qq jq zip time zip &>/dev/null || fail 213
+            sfApt install -y -qq jq zip time zip &>/dev/null || fail 214
             ;;
         redhat|centos)
-            yum install --enablerepo=epel -y -q wget jq time zip &>/dev/null || fail 214
+            yum install --enablerepo=epel -y -q wget jq time zip &>/dev/null || fail 215
             ;;
         *)
-            echo "Unsupported Linux distribution '$LINUX_KIND'!"
-            fail 215
+            echo "PROVISIONING_ERROR: Unsupported Linux distribution '$LINUX_KIND'!"
+            fail 216
             ;;
      esac
 }
@@ -667,14 +769,14 @@ add_common_repos() {
         ubuntu)
             sfFinishPreviousInstall
             add-apt-repository universe -y || return 1
-            codename=$(sfGetFact "linux codename")
+            codename=$(sfGetFact "linux_codename")
             echo "deb http://archive.ubuntu.com/ubuntu/ ${codename}-proposed main" >/etc/apt/sources.list.d/${codename}-proposed.list
             ;;
         redhat|centos)
             # Install EPEL repo ...
             yum install -y epel-release
             # ... but don't enable it by default
-            yum-config-manager --disablerepo=epel &>/dev/null
+            yum-config-manager --disablerepo=epel &>/dev/null || true
             ;;
     esac
 }
@@ -697,29 +799,43 @@ force_dbus_restart() {
     esac
 }
 
+update_kernel_settings() {
+    cat >/etc/sysctl.d/20-safescale.conf <<-EOF
+vm.max_map_count=262144
+EOF
+    case $LINUX_KIND in
+        ubuntu) systemctl restart systemd-sysctl;;
+        *)      sysctl -p;;
+    esac
+}
+
 # ---- Main
 
 configure_locale
 configure_dns
+ensure_network_connectivity
 add_common_repos
 early_packages_update
 
 identify_nics
 configure_network
 
-
 install_packages
 lspci | grep -i nvidia &>/dev/null && install_drivers_nvidia
 
-echo -n "0,linux,${LINUX_KIND},$(date +%Y/%m/%d-%H:%M:%S)" >/opt/safescale/var/state/user_data.phase2.done
+update_kernel_settings || fail 217
+
+echo -n "0,linux,${LINUX_KIND},${VERSION_ID},$(hostname),$(date +%Y/%m/%d-%H:%M:%S)" >/opt/safescale/var/state/user_data.phase2.done
 # For compatibility with previous user_data implementation (until v19.03.x)...
-ln -s /opt/safescale/var/state/user_data.phase2.done /var/tmp/user_data.done
+ln -s ${SF_VARDIR}/state/user_data.phase2.done /var/tmp/user_data.done
 
 # !!! DON'T REMOVE !!! #insert_tag allows to add something just before exiting,
 #                      but after the template has been realized (cf. libvirt Stack)
 #insert_tag
 
 force_dbus_restart
+
+ls -lR /opt/safescale
 
 set +x
 exit 0

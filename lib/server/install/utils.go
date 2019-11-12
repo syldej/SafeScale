@@ -19,23 +19,25 @@ package install
 import (
 	"bytes"
 	"fmt"
-	"github.com/CS-SI/SafeScale/lib/utils"
-	"github.com/sirupsen/logrus"
 	"io/ioutil"
 	"os"
 	"strings"
+	"sync/atomic"
 	"text/template"
-	// log "github.com/sirupsen/logrus"
+
+	"github.com/CS-SI/SafeScale/lib/utils"
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
 
 	pb "github.com/CS-SI/SafeScale/lib"
 	"github.com/CS-SI/SafeScale/lib/client"
 	srvutils "github.com/CS-SI/SafeScale/lib/server/utils"
 	"github.com/CS-SI/SafeScale/lib/system"
+	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
 	"github.com/CS-SI/SafeScale/lib/utils/retry"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
+	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 )
-
-// FIXME Here is the missing piece
 
 const (
 	featureScriptTemplateContent = `#!/bin/bash -x
@@ -62,9 +64,8 @@ set -x
 `
 )
 
-var (
-	featureScriptTemplate *template.Template
-)
+// var featureScriptTemplate *template.Template
+var featureScriptTemplate atomic.Value
 
 // parseTargets validates targets on the cluster from the feature specification
 // Without error, returns 'master target', 'private node target' and 'public node target'
@@ -155,22 +156,126 @@ func parseTargets(specs *viper.Viper) (string, string, string, error) {
 	return master, privnode, pubnode, nil
 }
 
+// UploadFile uploads a file to remote host
+func UploadFile(localpath string, host *pb.Host, remotepath, owner, group, rights string) (err error) {
+	if localpath == "" {
+		return scerr.InvalidParameterError("localpath", "cannot be empty string")
+	}
+	if host == nil {
+		return scerr.InvalidParameterError("host", "cannot be nil")
+	}
+	if remotepath == "" {
+		return scerr.InvalidParameterError("remotepath", "cannot be empty string")
+	}
+
+	to := fmt.Sprintf("%s:%s", host.Name, remotepath)
+
+	tracer := concurrency.NewTracer(nil, "", true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	sshClt := client.New().SSH
+	networkError := false
+	retryErr := retry.WhileUnsuccessful(
+		func() error {
+			retcode, _, _, err := sshClt.Copy(localpath, to, temporal.GetDefaultDelay(), temporal.GetExecutionTimeout())
+			if err != nil {
+				return err
+			}
+			if retcode != 0 {
+				// If retcode == 1 (general copy error), retry. It may be a temporary network incident
+				if retcode == 1 {
+					// File may exist on target, try to remote it
+					_, _, _, err = sshClt.Run(host.Name, fmt.Sprintf("sudo rm -f %s", localpath), temporal.GetBigDelay(), temporal.GetExecutionTimeout())
+					if err == nil {
+						return fmt.Errorf("file may exist on remote with inappropriate access rights, deleted it and retrying")
+					}
+					// If submission of removal of remote file fails, stop the retry and consider this as an unrecoverable network error
+					networkError = true
+					return nil
+				}
+				if system.IsSCPRetryable(retcode) {
+					err = fmt.Errorf("failed to copy file '%s' to '%s' (retcode: %d=%s)", localpath, to, retcode, system.SCPErrorString(retcode))
+					return err
+				}
+				return nil
+			}
+			return nil
+		},
+		temporal.GetDefaultDelay(),
+		temporal.GetLongOperationTimeout(),
+	)
+	if networkError {
+		return fmt.Errorf("an unrecoverable network error has occurred")
+	}
+	if retryErr != nil {
+		switch retryErr.(type) {
+		case retry.ErrTimeout:
+			return fmt.Errorf("timeout trying to copy temporary file to '%s': %s", to, retryErr.Error())
+		}
+		return retryErr
+	}
+
+	cmd := ""
+	if owner != "" {
+		cmd += "sudo chown " + owner + " " + remotepath
+	}
+	if group != "" {
+		if cmd != "" {
+			cmd += " && "
+		}
+		cmd += "sudo chgrp " + group + " " + remotepath
+	}
+	if rights != "" {
+		if cmd != "" {
+			cmd += " && "
+		}
+		cmd += "sudo chmod " + rights + " " + remotepath
+	}
+
+	retryErr = retry.WhileUnsuccessful(
+		func() error {
+			var retcode int
+			retcode, _, _, err = sshClt.Run(host.Name, cmd, temporal.GetDefaultDelay(), temporal.GetExecutionTimeout())
+			if err != nil {
+				return err
+			}
+			if retcode != 0 {
+				err = fmt.Errorf("failed to change rights of file '%s' (retcode=%d)", to, retcode)
+				return nil
+			}
+			return nil
+		},
+		temporal.GetMinDelay(),
+		temporal.GetContextTimeout(),
+	)
+	if retryErr != nil {
+		switch retryErr.(type) {
+		case retry.ErrTimeout:
+			return fmt.Errorf("timeout trying to change rights of file '%s' on host '%s': %s", remotepath, host.Name, err.Error())
+		default:
+			return fmt.Errorf("failed to change rights of file '%s' on host '%s': %s", remotepath, host.Name, retryErr.Error())
+		}
+	}
+	return nil
+}
+
 // UploadStringToRemoteFile creates a file 'filename' on remote 'host' with the content 'content'
 func UploadStringToRemoteFile(content string, host *pb.Host, filename string, owner, group, rights string) error {
 	if content == "" {
-		panic("content is empty!")
+		return scerr.InvalidParameterError("content", "cannot be empty string")
 	}
 	if host == nil {
-		panic("host is nil!")
+		return scerr.InvalidParameterError("host", "cannot be nil")
 	}
 	if filename == "" {
-		panic("filename is empty!")
+		return scerr.InvalidParameterError("filename", "cannot be empty string")
 	}
 
 	if forensics := os.Getenv("SAFESCALE_FORENSICS"); forensics != "" {
 		_ = os.MkdirAll(utils.AbsPathify(fmt.Sprintf("$HOME/.safescale/forensics/%s", host.Name)), 0777)
 		partials := strings.Split(filename, "/")
-		dumpName := utils.AbsPathify( fmt.Sprintf("$HOME/.safescale/forensics/%s/%s", host.Name, partials[len(partials)-1]))
+		dumpName := utils.AbsPathify(fmt.Sprintf("$HOME/.safescale/forensics/%s/%s", host.Name, partials[len(partials)-1]))
 
 		err := ioutil.WriteFile(dumpName, []byte(content), 0644)
 		if err != nil {
@@ -182,104 +287,36 @@ func UploadStringToRemoteFile(content string, host *pb.Host, filename string, ow
 	if err != nil {
 		return fmt.Errorf("failed to create temporary file: %s", err.Error())
 	}
-	to := fmt.Sprintf("%s:%s", host.Name, filename)
-	sshClt := client.New().Ssh
-	networkError := false
-	retryErr := retry.WhileUnsuccessful(
-		func() error {
-			retcode, _, _, err := sshClt.Copy(f.Name(), to, utils.GetDefaultDelay(), client.DefaultExecutionTimeout) // FIXME File operations
-			if err != nil {
-				return err
-			}
-			if retcode != 0 {
-				// If retcode == 1 (general copy error), retry. It may be a temporary network incident
-				if retcode == 1 {
-					// File may exist on target, try to remote it
-					_, _, _, err = sshClt.Run(host.Name, fmt.Sprintf("sudo rm -f %s", filename), utils.GetBigDelay(), client.DefaultExecutionTimeout)
-					if err == nil {
-						return fmt.Errorf("file may exist on remote with inappropriate access rights, deleted it and retrying")
-					}
-					// If submission of removal of remote file fails, stop the retry and consider this as an unrecoverable network error
-					networkError = true
-					return nil
-				}
-				if system.IsSCPRetryable(retcode) {
-					err = fmt.Errorf("failed to copy temporary file to '%s' (retcode: %d=%s)", to, retcode, system.SCPErrorString(retcode))
-				}
-				return nil
-			}
-			return nil
-		},
-		utils.GetDefaultDelay(),
-		2*utils.GetContextTimeout(),
-	)
-	_ = os.Remove(f.Name())
-	if networkError {
-		return fmt.Errorf("An unrecoverable network error has occurred")
-	}
-	if retryErr != nil {
-		switch retryErr.(type) {
-		case retry.ErrTimeout:
-			return fmt.Errorf("timeout trying to copy temporary file to '%s': %s", to, retryErr.Error())
-		}
-		return err
-	}
 
-	cmd := ""
-	if owner != "" {
-		cmd += "sudo chown " + owner + " " + filename
-	}
-	if group != "" {
-		if cmd != "" {
-			cmd += " && "
-		}
-		cmd += "sudo chgrp " + group + " " + filename
-	}
-	if rights != "" {
-		if cmd != "" {
-			cmd += " && "
-		}
-		cmd += "sudo chmod " + rights + " " + filename
-	}
-	retryErr = retry.WhileUnsuccessful(
-		func() error {
-			var retcode int
-			retcode, _, _, err = sshClt.Run(host.Name, cmd, utils.GetDefaultDelay(), client.DefaultExecutionTimeout)
-			if err != nil {
-				return err
-			}
-			if retcode != 0 {
-				err = fmt.Errorf("failed to change rights of file '%s' (retcode=%d)", to, retcode)
-				return nil
-			}
-			return nil
-		},
-		utils.GetMinDelay(),
-		utils.GetContextTimeout(),
-	)
-	if retryErr != nil {
-		switch retryErr.(type) {
-		case retry.ErrTimeout:
-			return fmt.Errorf("timeout trying to change rights of file '%s' on host '%s': %s", filename, host.Name, err.Error())
-		default:
-			return fmt.Errorf("failed to change rights of file '%s' on host '%s': %s", filename, host.Name, retryErr.Error())
-		}
-	}
-	return nil
+	err = UploadFile(f.Name(), host, filename, owner, group, rights)
+	_ = os.Remove(f.Name())
+	return err
 }
 
 // normalizeScript envelops the script with log redirection to /opt/safescale/var/log/feature.<name>.<action>.log
 // and ensures BashLibrary are there
 func normalizeScript(params map[string]interface{}) (string, error) {
-	var err error
+	var (
+		err         error
+		tmplContent string
+	)
 
-	if featureScriptTemplate == nil {
+	anon := featureScriptTemplate.Load()
+	if anon == nil {
+		if suffixCandidate := os.Getenv("SAFESCALE_SCRIPTS_FAIL_FAST"); suffixCandidate != "" {
+			tmplContent = strings.Replace(featureScriptTemplateContent, "set -u -o pipefail", "set -Eeuxo pipefail", 1)
+		} else {
+			tmplContent = featureScriptTemplateContent
+		}
+
 		// parse then execute the template
-		tmpl := fmt.Sprintf(featureScriptTemplateContent, srvutils.LogFolder, srvutils.LogFolder)
-		featureScriptTemplate, err = template.New("normalize_script").Parse(tmpl)
+		tmpl := fmt.Sprintf(tmplContent, srvutils.LogFolder, srvutils.LogFolder)
+		result, err := template.New("normalize_script").Parse(tmpl)
 		if err != nil {
 			return "", fmt.Errorf("error parsing bash template: %s", err.Error())
 		}
+		featureScriptTemplate.Store(result)
+		anon = featureScriptTemplate.Load()
 	}
 
 	// Configures BashLibrary template var
@@ -290,12 +327,34 @@ func normalizeScript(params map[string]interface{}) (string, error) {
 	params["reserved_BashLibrary"] = bashLibrary
 
 	dataBuffer := bytes.NewBufferString("")
-	err = featureScriptTemplate.Execute(dataBuffer, params)
+	err = anon.(*template.Template).Execute(dataBuffer, params)
 	if err != nil {
 		return "", err
 	}
 
 	return dataBuffer.String(), nil
+}
+
+// realizeVariables replaces in every variable any template
+func realizeVariables(variables Variables) (Variables, error) {
+	cloneV := variables.Clone()
+
+	for k, v := range cloneV {
+		if variable, ok := v.(string); ok {
+			varTemplate, err := template.New("realize_var").Parse(variable)
+			if err != nil {
+				return nil, fmt.Errorf("error parsing variable '%s': %s", k, err.Error())
+			}
+			buffer := bytes.NewBufferString("")
+			err = varTemplate.Execute(buffer, variables)
+			if err != nil {
+				return nil, err
+			}
+			cloneV[k] = buffer.String()
+		}
+	}
+
+	return cloneV, nil
 }
 
 func replaceVariablesInString(text string, v Variables) (string, error) {
@@ -362,7 +421,7 @@ func gatewayFromHost(host *pb.Host) *pb.Host {
 	if gwID == "" {
 		return host
 	}
-	gw, err := client.New().Host.Inspect(gwID, client.DefaultExecutionTimeout)
+	gw, err := client.New().Host.Inspect(gwID, temporal.GetExecutionTimeout())
 	if err != nil {
 		return nil
 	}

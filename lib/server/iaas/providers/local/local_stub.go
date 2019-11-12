@@ -29,11 +29,11 @@ import (
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/userdata"
 )
 
-var errorStr = "Libvirt Driver is not enabled, use the libvirt option while compiling (make libvirt all)"
+var errorStr = "libvirt Driver is not enabled, use the libvirt option while compiling (make libvirt all)"
 
-// Client is the implementation of the local driver regarding to the api.ClientAPI
-// provider is the providerementation of the OVH provider
+// provider is the implementation of the local driver regarding to the api.Provider
 type provider struct {
+	tenantParameters map[string]interface{}
 }
 
 //AuthOptions fields are the union of those recognized by each identity implementation and provider.
@@ -45,6 +45,7 @@ type CfgOptions struct {
 }
 
 func (provider *provider) Build(params map[string]interface{}) (providerapi.Provider, error) {
+	provider.tenantParameters = map[string]interface{}{}
 	return nil, fmt.Errorf(errorStr)
 }
 func (provider *provider) GetAuthenticationOptions() (providers.Config, error) {
@@ -111,6 +112,21 @@ func (provider *provider) CreateGateway(req resources.GatewayRequest) (*resource
 func (provider *provider) DeleteGateway(string) error {
 	return fmt.Errorf(errorStr)
 }
+func (provider *provider) CreateVIP(networkID string, description string) (*resources.VIP, error) {
+	return nil, fmt.Errorf(errorStr)
+}
+func (provider *provider) AddPublicIPToVIP(vip *resources.VIP) error {
+	return fmt.Errorf(errorStr)
+}
+func (provider *provider) BindHostToVIP(vip *resources.VIP, host *resources.Host) error {
+	return fmt.Errorf(errorStr)
+}
+func (provider *provider) UnbindHostFromVIP(vip *resources.VIP, host *resources.Host) error {
+	return fmt.Errorf(errorStr)
+}
+func (provider *provider) DeleteVIP(vip *resources.VIP) error {
+	return fmt.Errorf(errorStr)
+}
 
 func (provider *provider) CreateHost(request resources.HostRequest) (*resources.Host, *userdata.Content, error) {
 	return nil, nil, fmt.Errorf(errorStr)
@@ -169,7 +185,15 @@ func (provider *provider) DeleteVolumeAttachment(serverID, id string) error {
 	return fmt.Errorf(errorStr)
 }
 func (provider *provider) GetName() string {
-	return "local_disbled"
+	return "local_disabled"
+}
+func (provider *provider) GetTenantParameters() map[string]interface{} {
+	return nil
+}
+
+// GetCapabilities returns the capabilities of the provider
+func (provider *provider) GetCapabilities() providers.Capabilities {
+	return providers.Capabilities{}
 }
 
 func init() {

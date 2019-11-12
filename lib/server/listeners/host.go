@@ -20,8 +20,9 @@ import (
 	"context"
 	"fmt"
 
+	"google.golang.org/grpc/status"
+
 	google_protobuf "github.com/golang/protobuf/ptypes/empty"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 
 	log "github.com/sirupsen/logrus"
@@ -29,17 +30,13 @@ import (
 	pb "github.com/CS-SI/SafeScale/lib"
 	"github.com/CS-SI/SafeScale/lib/server/handlers"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
-	"github.com/CS-SI/SafeScale/lib/server/utils"
 	srvutils "github.com/CS-SI/SafeScale/lib/server/utils"
+	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 )
 
 // HostHandler ...
 var HostHandler = handlers.NewHostHandler
-
-// safescale host create host1 --net="net1" --cpu=2 --ram=7 --disk=100 --os="Ubuntu 16.04" --public=true
-// safescale host list --all=false
-// safescale host inspect host1
-// safescale host create host2 --net="net1" --cpu=2 --ram=7 --disk=100 --os="Ubuntu 16.04" --public=false
 
 // HostListener host service server grpc
 type HostListener struct{}
@@ -68,109 +65,141 @@ type StoredCPUInfo struct {
 }
 
 // Start ...
-func (s *HostListener) Start(ctx context.Context, in *pb.Reference) (*google_protobuf.Empty, error) {
-	log.Infof("Listeners: host start '%s' called", in.Name)
-	defer log.Debugf("Listeners: host start '%s' done", in.Name)
+func (s *HostListener) Start(ctx context.Context, in *pb.Reference) (empty *google_protobuf.Empty, err error) {
+	empty = &google_protobuf.Empty{}
+	if s == nil {
+		return empty, status.Errorf(codes.FailedPrecondition, scerr.InvalidInstanceError().Error())
+	}
+	ref := srvutils.GetReference(in)
+	if ref == "" {
+		return empty, status.Errorf(codes.FailedPrecondition, scerr.InvalidParameterError("ref", "cannot be empty string").Error())
+	}
+
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s')", ref), true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
 	ctx, cancelFunc := context.WithCancel(ctx)
-	if err := utils.ProcessRegister(ctx, cancelFunc, "Start Host "+in.GetName()); err != nil {
-		return nil, fmt.Errorf("Failed to register the process : %s", err.Error())
+	if err := srvutils.JobRegister(ctx, cancelFunc, "Start Host "+in.GetName()); err != nil {
+		return empty, status.Errorf(codes.FailedPrecondition, fmt.Errorf("failed to register the process : %s", err.Error()).Error())
 	}
 
 	tenant := GetCurrentTenant()
 	if tenant == nil {
 		log.Info("Can't start host: no tenant set")
-		return nil, grpc.Errorf(codes.FailedPrecondition, "Can't start host: no tenant set")
+		return empty, status.Errorf(codes.FailedPrecondition, "cannot start host: no tenant set")
 	}
 
 	handler := HostHandler(tenant.Service)
-	ref := utils.GetReference(in)
-	err := handler.Start(ctx, ref)
+	err = handler.Start(ctx, ref)
 	if err != nil {
-		return nil, grpc.Errorf(codes.Internal, err.Error())
+		return empty, status.Errorf(codes.Internal, err.Error())
 	}
 
 	log.Infof("Host '%s' successfully started", ref)
-	return &google_protobuf.Empty{}, nil
+	return empty, nil
 }
 
-// Stop ...
-func (s *HostListener) Stop(ctx context.Context, in *pb.Reference) (*google_protobuf.Empty, error) {
-	log.Infof("Listeners: host stop '%s' called", in.Name)
-	defer log.Debugf("Listeners: host stop '%s' done", in.Name)
+// Stop shutdowns a host.
+func (s *HostListener) Stop(ctx context.Context, in *pb.Reference) (empty *google_protobuf.Empty, err error) {
+	empty = &google_protobuf.Empty{}
+	if s == nil {
+		return empty, status.Errorf(codes.FailedPrecondition, scerr.InvalidInstanceError().Error())
+	}
+	ref := srvutils.GetReference(in)
+	if ref == "" {
+		return empty, status.Errorf(codes.FailedPrecondition, scerr.InvalidParameterError("ref", "cannot be empty string").Error())
+	}
+
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s')", ref), true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
 	ctx, cancelFunc := context.WithCancel(ctx)
-
-	if err := utils.ProcessRegister(ctx, cancelFunc, "Stop Host "+in.GetName()); err == nil {
-		defer utils.ProcessDeregister(ctx)
+	if err := srvutils.JobRegister(ctx, cancelFunc, "Stop Host "+ref); err == nil {
+		defer srvutils.JobDeregister(ctx)
 	}
 
 	tenant := GetCurrentTenant()
 	if tenant == nil {
 		log.Info("Can't stop host: no tenant set")
-		return nil, grpc.Errorf(codes.FailedPrecondition, "can't stop host: no tenant set")
+		return empty, status.Errorf(codes.FailedPrecondition, "cannot stop host: no tenant set")
 	}
 
 	handler := HostHandler(tenant.Service)
-	ref := utils.GetReference(in)
-	err := handler.Stop(ctx, ref)
+	err = handler.Stop(ctx, ref)
 	if err != nil {
-		return nil, grpc.Errorf(codes.Internal, err.Error())
+		return empty, status.Errorf(codes.Internal, err.Error())
 	}
 
 	log.Infof("Host '%s' stopped", ref)
-	return &google_protobuf.Empty{}, nil
+	return empty, nil
 }
 
-// Reboot ...
-func (s *HostListener) Reboot(ctx context.Context, in *pb.Reference) (*google_protobuf.Empty, error) {
-	log.Infof("Listeners: host reboot '%s' called", in.Name)
-	defer log.Debugf("Listeners: host reboot '%s' done", in.Name)
+// Reboot reboots a host.
+func (s *HostListener) Reboot(ctx context.Context, in *pb.Reference) (empty *google_protobuf.Empty, err error) {
+	empty = &google_protobuf.Empty{}
+	if s == nil {
+		return empty, status.Errorf(codes.FailedPrecondition, scerr.InvalidInstanceError().Error())
+	}
+	ref := srvutils.GetReference(in)
+	if ref == "" {
+		return empty, status.Errorf(codes.FailedPrecondition, scerr.InvalidParameterError("ref", "cannot be empty string").Error())
+	}
+
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s')", ref), true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
 	ctx, cancelFunc := context.WithCancel(ctx)
 
-	if err := utils.ProcessRegister(ctx, cancelFunc, "Reboot Host "+in.GetName()); err == nil {
-		defer utils.ProcessDeregister(ctx)
+	if err := srvutils.JobRegister(ctx, cancelFunc, "Reboot Host "+ref); err == nil {
+		defer srvutils.JobDeregister(ctx)
 	}
 
 	tenant := GetCurrentTenant()
 	if tenant == nil {
 		log.Info("Can't reboot host: no tenant set")
-		return nil, grpc.Errorf(codes.FailedPrecondition, "can't reboot host: no tenant set")
+		return empty, status.Errorf(codes.FailedPrecondition, "cannot reboot host: no tenant set")
 	}
 
 	handler := HostHandler(tenant.Service)
-	ref := utils.GetReference(in)
-	err := handler.Reboot(ctx, ref)
+	err = handler.Reboot(ctx, ref)
 	if err != nil {
-		return nil, grpc.Errorf(codes.Internal, err.Error())
+		return empty, status.Errorf(codes.Internal, err.Error())
 	}
 
 	log.Infof("Host '%s' successfully rebooted.", ref)
-	return &google_protobuf.Empty{}, nil
+	return empty, nil
 }
 
-// List available hosts
-func (s *HostListener) List(ctx context.Context, in *pb.HostListRequest) (*pb.HostList, error) {
-	log.Infoln("Listeners: host list called")
-	defer log.Debugln("Listeners: host list done")
+// List lists hosts managed by SafeScale only, or all hosts.
+func (s *HostListener) List(ctx context.Context, in *pb.HostListRequest) (hl *pb.HostList, err error) {
+	if s == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, scerr.InvalidInstanceError().Error())
+	}
+	all := in.GetAll()
+
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("(%v)", all), true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)
 
 	ctx, cancelFunc := context.WithCancel(ctx)
 
-	if err := utils.ProcessRegister(ctx, cancelFunc, "List Hosts"); err == nil {
-		defer utils.ProcessDeregister(ctx)
+	if err := srvutils.JobRegister(ctx, cancelFunc, "List Hosts"); err == nil {
+		defer srvutils.JobDeregister(ctx)
 	}
 
 	tenant := GetCurrentTenant()
 	if tenant == nil {
 		log.Info("Can't list host: no tenant set")
-		return nil, grpc.Errorf(codes.FailedPrecondition, "can't list hosts: no tenant set")
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot list hosts: no tenant set")
 	}
 
 	handler := HostHandler(tenant.Service)
-	hosts, err := handler.List(ctx, in.GetAll())
+	hosts, err := handler.List(ctx, all)
 	if err != nil {
-		return nil, grpc.Errorf(codes.Internal, err.Error())
+		return nil, status.Errorf(codes.Internal, err.Error())
 	}
 
 	// Map resources.Host to pb.Host
@@ -182,21 +211,29 @@ func (s *HostListener) List(ctx context.Context, in *pb.HostListRequest) (*pb.Ho
 	return rv, nil
 }
 
-// Create a new host
-func (s *HostListener) Create(ctx context.Context, in *pb.HostDefinition) (*pb.Host, error) {
-	log.Infof("Listeners: host create '%s' called", in.Name)
-	defer log.Debugf("Listeners: host create '%s' done", in.Name)
+// Create creates a new host
+func (s *HostListener) Create(ctx context.Context, in *pb.HostDefinition) (h *pb.Host, err error) {
+	if s == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, scerr.InvalidInstanceError().Error())
+	}
+	if in == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, scerr.InvalidParameterError("in", "cannot be nil").Error())
+	}
+	name := in.GetName()
+
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s')", name), true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
 	ctx, cancelFunc := context.WithCancel(ctx)
-
-	if err := utils.ProcessRegister(ctx, cancelFunc, "Create Host "+in.GetName()); err == nil {
-		defer utils.ProcessDeregister(ctx)
+	if err := srvutils.JobRegister(ctx, cancelFunc, "Create Host "+in.GetName()); err == nil {
+		defer srvutils.JobDeregister(ctx)
 	}
 
 	tenant := GetCurrentTenant()
 	if tenant == nil {
 		log.Info("Can't create host: no tenant set")
-		return nil, grpc.Errorf(codes.FailedPrecondition, "can't create host: no tenant set")
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot create host: no tenant set")
 	}
 
 	var sizing *resources.SizingRequirements
@@ -217,53 +254,49 @@ func (s *HostListener) Create(ctx context.Context, in *pb.HostDefinition) (*pb.H
 
 	handler := HostHandler(tenant.Service)
 	host, err := handler.Create(ctx,
-		in.GetName(),
+		name,
 		in.GetNetwork(),
 		in.GetImageId(),
 		in.GetPublic(),
 		sizing,
 		in.Force,
 	)
-	// host, err := handler.Create(ctx,
-	// 	in.GetName(),
-	// 	in.GetNetwork(),
-	// 	int(in.GetCpuCount()),
-	// 	in.GetRam(),
-	// 	int(in.GetDisk()),
-	// 	in.GetImageId(),
-	// 	in.GetPublic(),
-	// 	int(in.GetGpuCount()),
-	// 	float32(in.GetCpuFreq()),
-	// 	in.Force,
-	// )
 	if err != nil {
-		return nil, grpc.Errorf(codes.Internal, err.Error())
+		return nil, status.Errorf(codes.Internal, err.Error())
 	}
-	log.Infof("Host '%s' created", in.GetName())
+	log.Infof("Host '%s' created", name)
 	return srvutils.ToPBHost(host), nil
 
 }
 
 // Resize an host
-func (s *HostListener) Resize(ctx context.Context, in *pb.HostDefinition) (*pb.Host, error) {
-	log.Infof("Listeners: host resize '%s' done", in.Name)
-	defer log.Debugf("Listeners: host resize '%s' done", in.Name)
+func (s *HostListener) Resize(ctx context.Context, in *pb.HostDefinition) (h *pb.Host, err error) {
+	if s == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, scerr.InvalidInstanceError().Error())
+	}
+	if in == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, scerr.InvalidParameterError("in", "cannot be nil").Error())
+	}
+	name := in.GetName()
+
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s')", name), true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
 	ctx, cancelFunc := context.WithCancel(ctx)
-
-	if err := utils.ProcessRegister(ctx, cancelFunc, "Resize Host "+in.GetName()); err == nil {
-		defer utils.ProcessDeregister(ctx)
+	if err := srvutils.JobRegister(ctx, cancelFunc, "Resize Host "+name); err == nil {
+		defer srvutils.JobDeregister(ctx)
 	}
 
 	tenant := GetCurrentTenant()
 	if tenant == nil {
 		log.Info("Can't resize host: no tenant set")
-		return nil, grpc.Errorf(codes.FailedPrecondition, "can't resize host: no tenant set")
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot resize host: no tenant set")
 	}
 
 	handler := HostHandler(tenant.Service)
 	host, err := handler.Resize(ctx,
-		in.GetName(),
+		name,
 		int(in.GetCpuCount()),
 		in.GetRam(),
 		int(in.GetDisk()),
@@ -271,125 +304,148 @@ func (s *HostListener) Resize(ctx context.Context, in *pb.HostDefinition) (*pb.H
 		float32(in.GetCpuFreq()),
 	)
 	if err != nil {
-		return nil, grpc.Errorf(codes.Internal, err.Error())
+		return nil, status.Errorf(codes.Internal, err.Error())
 	}
-	log.Infof("Host '%s' resized", in.GetName())
+	log.Infof("Host '%s' resized", name)
 	return srvutils.ToPBHost(host), nil
 }
 
-// Status of a host
-func (s *HostListener) Status(ctx context.Context, in *pb.Reference) (*pb.HostStatus, error) {
-	log.Infof("Listeners: host status '%s' called", in.Name)
-	defer log.Debugf("Listeners: host status '%s' done", in.Name)
-
-	ctx, cancelFunc := context.WithCancel(ctx)
-
-	if err := utils.ProcessRegister(ctx, cancelFunc, "Status of Host "+in.GetName()); err == nil {
-		defer utils.ProcessDeregister(ctx)
+// Status returns the status of a host (running or stopped mainly)
+func (s *HostListener) Status(ctx context.Context, in *pb.Reference) (ht *pb.HostStatus, err error) {
+	if s == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, scerr.InvalidInstanceError().Error())
+	}
+	if in == nil {
+		return nil, status.Errorf(codes.InvalidArgument, scerr.InvalidParameterError("in", "cannot be nil").Error())
+	}
+	ref := srvutils.GetReference(in)
+	if ref == "" {
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot get host status: neither name nor id given as reference")
 	}
 
-	ref := utils.GetReference(in)
-	if ref == "" {
-		return nil, fmt.Errorf("Can't get host status: neither name nor id given as reference")
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s')", ref), true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	ctx, cancelFunc := context.WithCancel(ctx)
+	if err := srvutils.JobRegister(ctx, cancelFunc, "Status of Host "+in.GetName()); err == nil {
+		defer srvutils.JobDeregister(ctx)
 	}
 
 	tenant := GetCurrentTenant()
 	if tenant == nil {
 		log.Info("Can't get host status: no tenant set")
-		return nil, grpc.Errorf(codes.FailedPrecondition, "can't get host status: no tenant set")
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot get host status: no tenant set")
 	}
 
 	handler := HostHandler(tenant.Service)
 	host, err := handler.ForceInspect(ctx, ref)
 	if err != nil {
-		return nil, grpc.Errorf(codes.Internal, err.Error())
+		return nil, status.Errorf(codes.Internal, err.Error())
 	}
 	return srvutils.ToHostStatus(host), nil
 }
 
 // Inspect an host
-func (s *HostListener) Inspect(ctx context.Context, in *pb.Reference) (*pb.Host, error) {
-	log.Infof("Receiving 'host inspect %s'", in.Name)
-	log.Debugf(">>> lib.server.listeners.HostListener::Inspect(%s)", in.Name)
-	defer log.Debugf("<<< lib.server.listeners.HostListener::Inspect(%s)", in.Name)
-
-	ctx, cancelFunc := context.WithCancel(ctx)
-
-	if err := utils.ProcessRegister(ctx, cancelFunc, "Inspect Host "+in.GetName()); err == nil {
-		defer utils.ProcessDeregister(ctx)
+func (s *HostListener) Inspect(ctx context.Context, in *pb.Reference) (h *pb.Host, err error) {
+	if s == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, scerr.InvalidInstanceError().Error())
+	}
+	if in == nil {
+		return nil, status.Errorf(codes.InvalidArgument, scerr.InvalidParameterError("in", "cannot be nil").Error())
+	}
+	ref := srvutils.GetReference(in)
+	if ref == "" {
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot get host status: neither name nor id given as reference")
 	}
 
-	ref := utils.GetReference(in)
-	if ref == "" {
-		return nil, grpc.Errorf(codes.InvalidArgument, "can't inspect host: neither name nor id given as reference")
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s')", ref), true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	ctx, cancelFunc := context.WithCancel(ctx)
+	if err := srvutils.JobRegister(ctx, cancelFunc, "Inspect Host "+in.GetName()); err == nil {
+		defer srvutils.JobDeregister(ctx)
 	}
 
 	tenant := GetCurrentTenant()
 	if tenant == nil {
 		log.Info("Can't inspect host: no tenant set")
-		return nil, grpc.Errorf(codes.FailedPrecondition, "can't inspect host: no tenant set")
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot inspect host: no tenant set")
 	}
 
 	handler := HostHandler(tenant.Service)
 	host, err := handler.ForceInspect(ctx, ref)
 	if err != nil {
-		return nil, grpc.Errorf(codes.Internal, fmt.Sprintf("can't inspect host: %v", err))
+		return nil, status.Errorf(codes.Internal, fmt.Sprintf("cannot inspect host: %v", err))
 	}
 	return srvutils.ToPBHost(host), nil
 }
 
 // Delete an host
-func (s *HostListener) Delete(ctx context.Context, in *pb.Reference) (*google_protobuf.Empty, error) {
-	log.Infof("Receiving 'host delete %s'", in.Name)
-	log.Debugf(">>> lib.server.listeners.HostListener::Delete(%s)", in.Name)
-	defer log.Debugf("<<< lib.server.Listeners.HostListener::Delete(%s)", in.Name)
-
-	ctx, cancelFunc := context.WithCancel(ctx)
-
-	if err := utils.ProcessRegister(ctx, cancelFunc, "Delete Host "+in.GetName()); err == nil {
-		defer utils.ProcessDeregister(ctx)
+func (s *HostListener) Delete(ctx context.Context, in *pb.Reference) (empty *google_protobuf.Empty, err error) {
+	empty = &google_protobuf.Empty{}
+	if s == nil {
+		return empty, status.Errorf(codes.FailedPrecondition, scerr.InvalidInstanceError().Error())
+	}
+	if in == nil {
+		return empty, status.Errorf(codes.InvalidArgument, scerr.InvalidParameterError("in", "cannot be nil").Error())
+	}
+	ref := srvutils.GetReference(in)
+	if ref == "" {
+		return empty, status.Errorf(codes.FailedPrecondition, "cannot get host status: neither name nor id given as reference")
 	}
 
-	ref := utils.GetReference(in)
-	if ref == "" {
-		return nil, fmt.Errorf("Can't delete host: neither name nor id given as reference")
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s')", ref), true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	ctx, cancelFunc := context.WithCancel(ctx)
+	if err := srvutils.JobRegister(ctx, cancelFunc, "Delete Host "+in.GetName()); err == nil {
+		defer srvutils.JobDeregister(ctx)
 	}
 
 	tenant := GetCurrentTenant()
 	if tenant == nil {
 		log.Info("Can't delete host: no tenant set")
-		return nil, grpc.Errorf(codes.FailedPrecondition, "can't delete host: no tenant set")
+		return empty, status.Errorf(codes.FailedPrecondition, "cannot delete host: no tenant set")
 	}
 
 	handler := HostHandler(tenant.Service)
-	err := handler.Delete(ctx, ref)
+	err = handler.Delete(ctx, ref)
 	if err != nil {
-		return nil, grpc.Errorf(codes.Internal, err.Error())
+		return empty, status.Errorf(codes.Internal, err.Error())
 	}
 	log.Infof("Host '%s' successfully deleted.", ref)
-	return &google_protobuf.Empty{}, nil
+	return empty, nil
 }
 
 // SSH returns ssh parameters to access an host
-func (s *HostListener) SSH(ctx context.Context, in *pb.Reference) (*pb.SshConfig, error) {
-	log.Debugf(">>> lib.server.listeners.HostListener::SSH(%s)", in.Name)
-	defer log.Debugf("<<< lib.server.listeners.HostListener::SSH(%s)", in.Name)
-
-	ctx, cancelFunc := context.WithCancel(ctx)
-
-	if err := utils.ProcessRegister(ctx, cancelFunc, "SSH config of Host "+in.GetName()); err == nil {
-		defer utils.ProcessDeregister(ctx)
+func (s *HostListener) SSH(ctx context.Context, in *pb.Reference) (sc *pb.SshConfig, err error) {
+	if s == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, scerr.InvalidInstanceError().Error())
+	}
+	if in == nil {
+		return nil, status.Errorf(codes.InvalidArgument, scerr.InvalidParameterError("in", "cannot be nil").Error())
+	}
+	ref := srvutils.GetReference(in)
+	if ref == "" {
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot get host status: neither name nor id given as reference")
 	}
 
-	ref := utils.GetReference(in)
-	if ref == "" {
-		return nil, fmt.Errorf("Can't ssh to host: neither name nor id given as reference")
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s')", ref), true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	ctx, cancelFunc := context.WithCancel(ctx)
+	if err := srvutils.JobRegister(ctx, cancelFunc, "SSH config of Host "+in.GetName()); err == nil {
+		defer srvutils.JobDeregister(ctx)
 	}
 
 	tenant := GetCurrentTenant()
 	if tenant == nil {
-		log.Info("Can't delete host: no tenant set")
-		return nil, grpc.Errorf(codes.FailedPrecondition, "can't ssh host: no tenant set")
+		log.Info("cannot delete host: no tenant set")
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot ssh host: no tenant set")
 	}
 
 	handler := HostHandler(currentTenant.Service)

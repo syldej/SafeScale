@@ -33,7 +33,7 @@ _Note_: the `kong` feature is automatically installed on the gateway when a clus
 
 ## How to write a feature
 
-In addition to _embedded features_ listed above, Safescale will look for _external features_ in folders : 
+In addition to _embedded features_ listed above, Safescale will look for _external features_ in folders :
 *	$HOME/.safescale/features
 *	$HOME/.config/safescale/features
 *	/etc/safescale/features
@@ -148,7 +148,7 @@ key | description | subkeys | values | mandatory
 ----- | ----- | ----- | ----- | -----
 `suitableFor`    | Describe where the feature could be installed | host <br> cluster | - | True
 host    |  Allow the feature to be installed on a single host  | - | true <br> false | True
-cluster    |  Allow the feature to be installed on a cluster flavor   | - |  false (can't be installed on any flavor)<br> any (can be installed on any flavor)<br> boh <br> dcos <br> k8s <br> ohpc <br> swarm <br> *Multiples flavors can be allowed separated with a comma; ex: (swarm,boh)* | True
+cluster    |  Allow the feature to be installed on a cluster flavor   | - |  false (cannot be installed on any flavor)<br> any (can be installed on any flavor)<br> boh <br> dcos <br> k8s <br> ohpc <br> swarm <br> *Multiples flavors can be allowed separated with a comma; ex: (swarm,boh)* | True
 `requirements`   | Describe requirements for the feature to works properly | features <br> clusterSizing | - | False
 features    | Features who should be installed before to start   | -  |  feature_list | False
 clusterSizing    | ? |  ? | ? | False
@@ -156,8 +156,8 @@ clusterSizing    | ? |  ? | ? | False
 `install` | Describe how to install the feature | apt <br> bash <br> dcos <br> dnf <br> yum <br> *You can specify how to install the feature with any combinaison of installation methods, just by creating a new subkey for each method* | - | True
 apt <br> bash <br> dcos <br> dnf <br> yum | Describe how to install the feature for a specific method | check <br> add <br> remove | - | True
 check    | Describe the process to check if the feature is already installed <br> runs should all exit with 0 if the feature is installed | pace <br> steps | - | True
-add    | Describe the process to install the feature <br> runs should all return 0 if the installation works well | pace <br> steps | - | True 
-remove    | Describe the process to remove the feature <br> runs should all return 0 if the suppression works well | pace <br> steps | - | True 
+add    | Describe the process to install the feature <br> runs should all return 0 if the installation works well | pace <br> steps | - | True
+remove    | Describe the process to remove the feature <br> runs should all return 0 if the suppression works well | pace <br> steps | - | True
 pace | List the steps needed to achieve the check/add/remove | - | step_list <br> *Separated by commas, they will be executed in the provided order* | True
 steps | Each steps subkey will be a step | step <br> *There could be any number of step but they have to be registerd in pace to be taken in account* | - | True
 step<br>*Step real name could be anything* | A sub task of check/add/remove | timeout <br> targets <br> run | - | True
@@ -175,20 +175,21 @@ name | The rule name | - | rule_name | True
 type | The kind of rule to apply | - | service (https://docs.konghq.com/1.0.x/admin-api/#service-object) <br> route (https://docs.konghq.com/1.0.x/admin-api/#route-object) <br> upstream (https://docs.konghq.com/1.0.x/admin-api/#upstream-object) | True
 targets | Where shoud the step be executed | hosts <br> masters <br> nodes | - | True
 hosts | Shoud the step be executed on a single host | - | false (will not be executed) <br> yes (will be executed) | True
-masters <br> nodes | Shoud the step be executed on cluster masters/nodes | - | none (will not be executed) <br> one (will be executed on only one, the same | True 
+masters <br> nodes | Shoud the step be executed on cluster masters/nodes | - | none (will not be executed) <br> one (will be executed on only one, the same | True
 content | Parameters of the rule, they will depend of the rule type | - | json repesentation of a map with param_name as key and param_value as value <br> *The script will be extanded by templated parameters, [cf. Proxy-rule-content](###Proxy-rule-content)* | True
 
 
 ### Install-step-run
 
 Each install step has a run field describing the commands who will be executed on the targeted host (the execution method will depend of the chosen installer). If a step exits with a return code different from 0, the step will be considered failed and the following steps will not be executed.<br>
-Several templated parameters are useable (using GO text template syntax) : 
+Several templated parameters are usable (using GO text template syntax) :
 *   `{{.Username}}` : the name of the default user of the targeted host/cluster
 *   `{{.Hostname}}` : the hostname of the current targeted host (keep in mind at the lower level, each step is applied on all hosts targeted)
-*   `{{.HostIP}}`   : the IP of the current targeted host
-*   `{{.GatewayIP}}` : The private IP of the gateway
-*   `{{.PublicIP}}` : the public IP of the gateway
-*   `{{.parameter}}` : value of parameter define in the feature
+*   `{{.HostIP}}`   : the private IP of the current targeted host
+*   `{{.PublicIP}}`   : the public IP of the current targeted host (if there is one)
+*   `{{.DefaultRouteIP}}` : The IP of the default route for hosts inside the network
+*   `{{.EndpointIP}}` : The public IP to reach the network/platform from Internet
+*   `{{.<parameter name>}}` : value of parameter defined in the feature
 
 Several embedded functions are available to be use in scripts (cf. system/scripts/bash_library.sh in SafeScale code)
 
@@ -251,7 +252,7 @@ _Note_: this example will induce the creation of a parameter called `guacamole`,
 #### rule type `route`
 A kong route aims to link a service to a public url.
 
-Example : 
+Example :
 ```
 - name: remotedesktop
     type: route

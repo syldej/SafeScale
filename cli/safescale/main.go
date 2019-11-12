@@ -33,6 +33,7 @@ import (
 	"github.com/CS-SI/SafeScale/cli/safescale/commands"
 	"github.com/CS-SI/SafeScale/lib/client"
 	"github.com/CS-SI/SafeScale/lib/server/utils"
+	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 
 	// Autoload embedded provider drivers
 	_ "github.com/CS-SI/SafeScale/lib/server"
@@ -44,13 +45,13 @@ func cleanup() {
 	fmt.Print("Do you really want to stop the command ? [y]es [n]o: ")
 	text, err := reader.ReadString('\n')
 	if err != nil {
-		fmt.Println("Failed to read the imput : ", err.Error())
+		fmt.Println("failed to read the input : ", err.Error())
 		text = "y"
 	}
 	if strings.TrimRight(text, "\n") == "y" {
-		err = client.New().ProcessManager.Stop(utils.GetUUID(), client.DefaultExecutionTimeout)
+		err = client.New().JobManager.Stop(utils.GetUUID(), temporal.GetExecutionTimeout())
 		if err != nil {
-			fmt.Printf("Failed to stop the process %v\n", err)
+			fmt.Printf("failed to stop the process %v\n", err)
 		}
 		os.Exit(0)
 	}
@@ -104,7 +105,7 @@ func main() {
 
 	app.Before = func(c *cli.Context) error {
 		if strings.Contains(path.Base(os.Args[0]), "-cover") {
-			log.SetLevel(log.DebugLevel)
+			log.SetLevel(log.TraceLevel)
 			utils.Verbose = true
 		} else {
 			log.SetLevel(log.WarnLevel)
@@ -115,7 +116,11 @@ func main() {
 			utils.Verbose = true
 		}
 		if c.GlobalBool("debug") {
-			log.SetLevel(log.DebugLevel)
+			if c.GlobalBool("verbose") {
+				log.SetLevel(log.TraceLevel)
+			} else {
+				log.SetLevel(log.DebugLevel)
+			}
 			utils.Debug = true
 		}
 		return nil

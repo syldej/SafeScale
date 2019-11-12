@@ -19,13 +19,13 @@ package metadata
 import (
 	"bytes"
 	"fmt"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
 
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/objectstorage"
-	"github.com/CS-SI/SafeScale/lib/utils"
 	"github.com/CS-SI/SafeScale/lib/utils/crypt"
 )
 
@@ -42,9 +42,9 @@ type Folder struct {
 type FolderDecoderCallback func([]byte) error
 
 // NewFolder creates a new Metadata Folder object, ready to help access the metadata inside it
-func NewFolder(svc iaas.Service, path string) *Folder {
+func NewFolder(svc iaas.Service, path string) (*Folder, error) {
 	if svc == nil {
-		panic("svc is nil!")
+		return nil, scerr.InvalidParameterError("svc", "cannot be nil!")
 	}
 	cryptKey := svc.GetMetadataKey()
 	crypto := cryptKey != nil && len(cryptKey) > 0
@@ -56,7 +56,7 @@ func NewFolder(svc iaas.Service, path string) *Folder {
 	if crypto {
 		f.cryptKey = cryptKey
 	}
-	return f
+	return f, nil
 }
 
 // GetService returns the service used by the folder
@@ -104,7 +104,7 @@ func (f *Folder) Search(path string, name string) error {
 			return nil
 		}
 	}
-	return utils.NotFoundError(fmt.Sprintf("failed to find '%s'", fullPath))
+	return scerr.NotFoundError(fmt.Sprintf("failed to find '%s'", fullPath))
 }
 
 // Delete removes metadata passed as parameter
@@ -118,34 +118,43 @@ func (f *Folder) Delete(path string, name string) error {
 
 // Read loads the content of the object stored in metadata bucket
 // returns false, nil if the object is not found
-// returns false, err if an error occured
+// returns false, err if an error occurred
 // returns true, nil if the object has been found
 // The callback function has to know how to decode it and where to store the result
 func (f *Folder) Read(path string, name string, callback FolderDecoderCallback) error {
 	err := f.Search(path, name)
 	if err != nil {
-		if _, ok := err.(utils.ErrNotFound); ok {
+		if _, ok := err.(scerr.ErrNotFound); ok {
 			return err
 		}
 
-		return fmt.Errorf("failed to search in Metadata Storage: %v", err)
+		return err
 	}
 
 	var buffer bytes.Buffer
 	_, err = f.service.GetMetadataBucket().ReadObject(f.absolutePath(path, name), &buffer, 0, 0)
 	if err != nil {
-		return utils.NotFoundError(fmt.Sprintf("failed to read '%s/%s' in Metadata Storage: %v", path, name, err))
+		if _, ok := err.(scerr.ErrNotFound); ok {
+			return scerr.NotFoundError(fmt.Sprintf("failed to read '%s/%s' in Metadata Storage: %v", path, name, err))
+		}
+		return err
 	}
 	data := buffer.Bytes()
 	if f.crypt {
 		data, err = crypt.Decrypt(data, f.cryptKey)
 		if err != nil {
-			return utils.NotFoundError(fmt.Sprintf("failed to decrypt metadata '%s/%s': %v", path, name, err))
+			if _, ok := err.(scerr.ErrNotFound); ok {
+				return scerr.NotFoundError(fmt.Sprintf("failed to decrypt metadata '%s/%s': %v", path, name, err))
+			}
+			return err
 		}
 	}
 	err = callback(data)
 	if err != nil {
-		return utils.NotFoundError(fmt.Sprintf("failed to decode metadata '%s/%s': %v", path, name, err))
+		if _, ok := err.(scerr.ErrNotFound); ok {
+			return scerr.NotFoundError(fmt.Sprintf("failed to decode metadata '%s/%s': %v", path, name, err))
+		}
+		return err
 	}
 	return nil
 }

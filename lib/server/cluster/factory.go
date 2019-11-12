@@ -30,13 +30,14 @@ import (
 	"github.com/CS-SI/SafeScale/lib/server/cluster/flavors/k8s"
 	"github.com/CS-SI/SafeScale/lib/server/cluster/flavors/swarm"
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
-	"github.com/CS-SI/SafeScale/lib/utils"
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
+	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 )
 
 // Load ...
 func Load(task concurrency.Task, name string) (api.Cluster, error) {
-	tenant, err := client.New().Tenant.Get(client.DefaultExecutionTimeout)
+	tenant, err := client.New().Tenant.Get(temporal.GetExecutionTimeout())
 	if err != nil {
 		return nil, err
 	}
@@ -51,12 +52,15 @@ func Load(task concurrency.Task, name string) (api.Cluster, error) {
 	}
 	err = m.Read(task, name)
 	if err != nil {
-		if _, ok := err.(utils.ErrNotFound); ok {
+		if _, ok := err.(scerr.ErrNotFound); ok {
 			return nil, err
 		}
 		return nil, fmt.Errorf("failed to get information about Cluster '%s': %s", name, err.Error())
 	}
-	controller := m.Get()
+	controller, err := m.Get()
+	if err != nil {
+		return nil, err
+	}
 	err = setForeman(task, controller)
 	if err != nil {
 		return nil, err
@@ -68,37 +72,37 @@ func setForeman(task concurrency.Task, controller *control.Controller) error {
 	flavor := controller.GetIdentity(task).Flavor
 	switch flavor {
 	case Flavor.DCOS:
-		controller.Restore(task, control.NewForeman(controller, dcos.Makers))
+		return controller.Restore(task, control.NewForeman(controller, dcos.Makers))
 	case Flavor.BOH:
-		controller.Restore(task, control.NewForeman(controller, boh.Makers))
+		return controller.Restore(task, control.NewForeman(controller, boh.Makers))
 	// case Flavor.OHPC:
 	// 	controller.Restore(task, control.NewForeman(controller, ohpc.Makers))
 	case Flavor.K8S:
-		controller.Restore(task, control.NewForeman(controller, k8s.Makers))
+		return controller.Restore(task, control.NewForeman(controller, k8s.Makers))
 	case Flavor.SWARM:
-		controller.Restore(task, control.NewForeman(controller, swarm.Makers))
+		return controller.Restore(task, control.NewForeman(controller, swarm.Makers))
 	default:
-		return fmt.Errorf("cluster Flavor '%s' not yet implemented", flavor.String())
+		return scerr.NotImplementedError(fmt.Sprintf("cluster Flavor '%s' not yet implemented", flavor.String()))
 	}
-	return nil
 }
 
 // Create creates a cluster following the parameters of the request
-func Create(task concurrency.Task, req control.Request) (api.Cluster, error) {
-	log.Debugf(">>> lib.server.cluster.factory::Create()")
-	defer log.Debugf("<<< safescale.cluster.factory::Create()")
+func Create(task concurrency.Task, req control.Request) (_ api.Cluster, err error) {
+	tracer := concurrency.NewTracer(task, "", true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
 	// Validates parameters
 	if req.Name == "" {
-		panic("req.Name is empty!")
+		return nil, scerr.InvalidParameterError("req.Name", "cannot be empty!")
 	}
 	if req.CIDR == "" {
-		panic("req.CIDR is empty!")
+		return nil, scerr.InvalidParameterError("req.CIDR", "cannot be empty!")
 	}
 
 	log.Infof("Creating infrastructure for cluster '%s'", req.Name)
 
-	tenant, err := client.New().Tenant.Get(client.DefaultExecutionTimeout)
+	tenant, err := client.New().Tenant.Get(temporal.GetExecutionTimeout())
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +111,10 @@ func Create(task concurrency.Task, req control.Request) (api.Cluster, error) {
 		return nil, err
 	}
 
-	controller := control.NewController(svc)
+	controller, err := control.NewController(svc)
+	if err != nil {
+		return nil, err
+	}
 	req.Tenant = tenant.Name
 	switch req.Flavor {
 	case Flavor.BOH:
@@ -136,7 +143,7 @@ func Create(task concurrency.Task, req control.Request) (api.Cluster, error) {
 			return nil, err
 		}
 	default:
-		return nil, fmt.Errorf("cluster Flavor '%s' not yet implemented", req.Flavor.String())
+		return nil, scerr.NotImplementedError(fmt.Sprintf("cluster Flavor '%s' not yet implemented", req.Flavor.String()))
 	}
 
 	log.Infof("Cluster '%s' created and initialized successfully", req.Name)
@@ -155,8 +162,8 @@ func Delete(task concurrency.Task, name string) error {
 }
 
 // List lists the clusters already created
-func List() ([]api.Cluster, error) {
-	tenant, err := client.New().Tenant.Get(client.DefaultExecutionTimeout)
+func List() (clusterList []api.Cluster, err error) {
+	tenant, err := client.New().Tenant.Get(temporal.GetExecutionTimeout())
 	if err != nil {
 		return nil, err
 	}
@@ -165,15 +172,19 @@ func List() ([]api.Cluster, error) {
 		return nil, err
 	}
 
-	var clusterList []api.Cluster
 	m, err := control.NewMetadata(svc)
 	if err != nil {
 		return clusterList, err
 	}
+
 	err = m.Browse(func(controller *control.Controller) error {
-		clusterList = append(clusterList, controller)
+		if controller.Identity.OK() {
+			clusterList = append(clusterList, controller)
+		}
+
 		return nil
 	})
+
 	return clusterList, err
 }
 

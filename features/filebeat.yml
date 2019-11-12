@@ -20,14 +20,14 @@ feature:
         host: yes
         cluster: all
     parameters:
-        - ElasticsearchPort=9200
-        - ElasticsearchHost={{ .HostIP }}
-        - KibanaURL=http://{{ .HostIP }}:5601/
-    
+        - Version=7.2.0
+        - ElasticsearchURL=http://{{ .HostIP }}:9200/
+        - KibanaURL=http://{{ .HostIP }}:5061/
+
     install:
         bash:
             check:
-                pace: pkg
+                pace: docker
                 steps:
                     pkg:
                         targets:
@@ -35,116 +35,103 @@ feature:
                             masters: all
                             nodes: all
                         run: |
-                            sfService status filebeat
+                            sfDoesDockerRunContainer docker.elastic.co/beats/filebeat:{{ .Version }} filebeat4safescale_agent_1 || sfFail 192
+                            sfExit
 
             add:
-                pace: install,config,start
+                pace: config,compose,start
                 steps:
-                    install:
-                        serial: true
-                        targets:
-                            hosts: yes
-                            masters: all
-                            nodes: all
-                        run: |
-                            case $LINUX_KIND in
-                                debian|ubuntu)
-                                    if [ ! -f /etc/apt/sources.list.d/elastic-7.list ]; then
-                                        wget -qO - https://artifacts.elastic.co/GPG-KEY-elasticsearch | apt-key add -
-                                        sfApt install -qy apt-transport-https
-                                        echo "deb https://artifacts.elastic.co/packages/oss-7.x/apt stable main" >/etc/apt/sources.list.d/elastic-7.list
-                                    fi
-                                    sfApt update
-                                    sfApt install -y filebeat || exit 192
-                                    ;;
-                                centos|rhel)
-                                    if [ ! -f /etc/yum.repos.d/elastic-7.repo ]; then
-                                        cat >/etc/yum.repos.d/elastic-7.repo <<-'EOF'
-                            [elastic-7.x]
-                            name=Elastic repository for 7.x OSS packages
-                            baseurl=https://artifacts.elastic.co/packages/oss-7.x/yum
-                            gpgcheck=1
-                            gpgkey=https://artifacts.elastic.co/GPG-KEY-elasticsearch
-                            enabled=1
-                            autorefresh=1
-                            type=rpm-md
-                            EOF
-                                        rpm --import https://packages.elastic.co/GPG-KEY-elasticsearch
-                                    fi
-                                    yum install -y filebeat || exit 192
-                                    ;;
-                                *)
-                                    echo "Unsupported operating system '$LINUX_KIND'"
-                                    exit 193
-                                    ;;
-                            esac
-                            exit 0
-
                     config:
                         targets:
                             hosts: yes
                             masters: all
-                            nodes: all
+                            nodes: no
                         run: |
-                            mkdir -p /etc/filebeat/modules.d /var/log/filebeat
+                            mkdir -p ${SF_ETCDIR}/filebeat4safescale/modules.d ${SF_ETCDIR}/filebeat4safescale/configs.d
 
-                            cat >/etc/filebeat/filebeat.yml <<-EOF
+                            cat >${SF_ETCDIR}/filebeat4safescale/config.yml <<-'EOF'
                             setup.dashboards:
-                              enabled: true
+                                enabled: true
                             setup.kibana:
                             {{- if .ClusterFlavor }}
-                                host: "https://{{.GatewayIP}/services/kibana/"
+                                host: "https://{{ .DefaultRouteIP }}/monitoring/kibana/"
                             {{ else }}
-                                host: "http://{{.KibanaUrl}}"
+                                host: "{{.KibanaURL}}"
                             {{ end -}}
 
-                            filebeat.config.modules:
-                              path: ${path.config}/modules.d/*.yml
-                              reload.enabled: true
-                              reload.period: 10s
+                            filebeat:
+                                config:
+                                    modules:
+                                        enabled: true
+                                        path: ${path.config}/modules.d/*.yml
+                                        reload.enabled: true
+                                        reload.period: 10s
+                                inputs:
+                                    enabled: true
+                                    path: ${path.configs}/configs/*.yml
 
-                            filebeat.inputs:
-                              - type: log
-                                paths:
-                                  - /var/log/*.log
-                                  - /var/log/*/*.log
-
-                            output.elasticsearch:
-                            {{- if .ClusterFlavor }}
-                              hosts:
-                              {{- range .MasterIPs }}
-                                - "{{ . }}"
-                              {{ end -}}
-                            {{ else }}
-                              hosts:
-                                - "{{ .ElasticsearchHost }}"
-                            {{ end -}}
-                              protocol: http
-                              port: {{ .ElasticsearchPort }}
 
                             tags: ["safescale"]
 
-                            logging.to_files: true
-                            logging.files:
-                              path: /var/log/filebeat
-                              name: filebeat.log
-                            logging.selectors: ["*"]
-                            logging.to_syslog: false
-                            EOF
-                            exit 0
+                            processors:
+                                - add_cloud_metadata: ~
 
-                    start:
+                            logging:
+                                to_syslog: false
+                                to_files: true
+                                files:
+                                    path: /var/log/filebeat
+                                    name: filebeat.log
+                                selectors: ["*"]
+
+                            output.elasticsearch:
+                                hosts:
+                            {{- if .ClusterFlavor }}
+                                {{- range .MasterIPs }}
+                                    - "http://{{ . }}:9200/"
+                                {{ end -}}
+                            {{ else }}
+                                    - "{{ .ElasticsearchURL }}"
+                            {{ end -}}
+                                # index: "%{[fields.log_type]}-%{[agent.version]}-%{+yyyy.MM.dd}"
+                                enabled: true
+
+                            xpack.monitoring:
+                                enabled: true
+                            EOF
+
+                    compose:
                         targets:
+                            gateways: all
                             hosts: yes
                             masters: all
                             nodes: all
                         run: |
-                            sfService enable filebeat
-                            sfService start filebeat || exit 196
-                            exit 0
+                            cat >${SF_ETCDIR}/filebeat4safescale/docker-compose.xml <<-EOF
+                            version: '2.1'
+
+                            services:
+                                agent:
+                                    image: docker.elastic.co/beats/filebeat:{{ .Version }}
+                                    volumes:
+                                        - ${SF_ETCDIR}/filebeat4safescale/modules.d:/etc/heartbeat/modules.d:ro
+                                        - ${SF_ETCDIR}/filebeat4safescale/config.yml:/usr/share/heartbeat/heartbeat.yml:ro
+                                    restart: always
+                            EOF
+
+                    start:
+                        targets:
+                            gateways: all
+                            hosts: yes
+                            masters: all
+                            nodes: all
+                        run: |
+                            docker-compose -f ${SF_ETCDIR}/filebeat4safescale/docker-compose.yml -p filebeat4safescale up -d || sfFail 193
+                            sfRetry 5m 5 "sfDoesDockerRunContainer docker.elastic.co/beats/filebeat:{{ .Version }} filebeat4safescale_agent_1" || sfFail 194
+                            sfExit
 
             remove:
-                pace: stop,remove
+                pace: stop,cleanup
                 steps:
                     stop:
                         targets:
@@ -152,38 +139,18 @@ feature:
                             masters: all
                             nodes: all
                         run: |
-                            sfService stop filebeat
-                            sfService disable filebeat
+                            docker-compose -f ${SF_ETCDIR}/filebeat4safescale/docker-compose.yml -p filebeat4safescale rm --stop --force || sfFail 195
+                            sfExit
 
-                    remove:
+                    cleanup:
                         targets:
+                            gateways: all
                             hosts: yes
                             masters: all
                             nodes: all
                         run: |
-                            case $LINUX_KIND in
-                                debian|ubuntu)
-                                    sfApt remove -y filebeat
-                                    sfApt purge -y filebeat
-                                    ;;
-                                centos|rhel)
-                                    yum remove -y filebeat
-                                    ;;
-                                *)
-                                    echo "Unsupported operating system '$LINUX_KIND'"
-                                    exit 4224
-                                    ;;
-                            esac
-                            rm -rf /etc/filebeat
-
-    service:
-        start: |
-            sfService start filebeat
-
-        stop: |
-            sfService stop filebeat
-
-        state: |
-            sfService status filebeat
+                            docker image rm -f docker.elastic.co/beats/filebeat:{{ .Version }}
+                            rm -rf ${SF_ETCDIR}/filebeat4safescale
+                            sfExit
 
 ...

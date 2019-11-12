@@ -18,6 +18,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 	"runtime"
 
 	"github.com/sirupsen/logrus"
@@ -27,7 +28,6 @@ import (
 	"github.com/CS-SI/SafeScale/lib/server/cluster/control"
 	"github.com/CS-SI/SafeScale/lib/server/cluster/enums/Complexity"
 	"github.com/CS-SI/SafeScale/lib/server/cluster/enums/Flavor"
-	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
 )
 
@@ -38,9 +38,9 @@ func Run() {
 	clusterName := "test-cluster"
 	instance, err := cluster.Load(concurrency.RootTask(), clusterName)
 	if err != nil {
-		if _, ok := err.(resources.ErrResourceNotFound); ok {
+		if _, ok := err.(scerr.ErrNotFound); ok {
 			logrus.Warnf("Cluster '%s' not found, creating it (this will take a while)\n", clusterName)
-			instance, err = cluster.Create(concurrency.RootTask(), control.Request{
+			cinstance, cerr := cluster.Create(concurrency.RootTask(), control.Request{
 				Name:       clusterName,
 				Complexity: Complexity.Small,
 				//Complexity: Complexity.Normal,
@@ -48,19 +48,20 @@ func Run() {
 				CIDR:   "192.168.0.0/28",
 				Flavor: Flavor.DCOS,
 			})
-			if err != nil {
-				fmt.Printf("Failed to create cluster: %s\n", err.Error())
+			if cerr != nil {
+				fmt.Printf("failed to create cluster: %s\n", cerr.Error())
 				return
 			}
+			instance = cinstance
 		} else {
-			fmt.Printf("Failed to load cluster '%s' parameters: %s\n", clusterName, err.Error())
+			fmt.Printf("failed to load cluster '%s' parameters: %s\n", clusterName, err.Error())
 			return
 		}
 	}
 
 	state, err := instance.GetState(concurrency.RootTask())
 	if err != nil {
-		fmt.Println("Failed to get cluster state.")
+		fmt.Println("failed to get cluster state.")
 		return
 	}
 	fmt.Printf("Cluster state: %s\n", state.String())
@@ -76,7 +77,7 @@ func Run() {
 		},
 	})
 	if err != nil {
-		fmt.Printf("Failed to create Private Agent Node: %s\n", err.Error())
+		fmt.Printf("failed to create Private Agent Node: %s\n", err.Error())
 		return
 	}
 }

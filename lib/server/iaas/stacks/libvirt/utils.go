@@ -25,7 +25,7 @@ import (
 	"sync"
 )
 
-// VMInfo represents the usefull informations package send from each new local vm
+// VMInfo represents the useful informations package send from each new local vm
 type VMInfo struct {
 	publicIP string
 }
@@ -42,14 +42,14 @@ var vmInfoWaiter = VMInfoWaiterStruct{
 	chansByName: map[string](chan VMInfo){},
 }
 
-// Register will register a vmCreator who wants to be notified if the listner recieve informations of the vm he created
+// Register will register a vmCreator who wants to be notified if the listener receives information of the vm he created
 func (iw *VMInfoWaiterStruct) Register(name string) chan VMInfo {
 	channel := make(chan VMInfo)
 
 	iw.mutex.Lock()
 	iw.chansByName[name] = channel
 	iw.mutex.Unlock()
-	fmt.Println("Registerd : ", name)
+	fmt.Println("Registered : ", name)
 
 	return channel
 }
@@ -64,9 +64,9 @@ func (iw *VMInfoWaiterStruct) deregister(name string) error {
 	iw.mutex.Unlock()
 
 	if !found {
-		return fmt.Errorf("Nothing registered with the name %s", name)
+		return fmt.Errorf("nothing registered with the name %s", name)
 	}
-	fmt.Println("Deregisterd : ", name)
+	fmt.Println("Deregistered : ", name)
 	return nil
 }
 
@@ -75,7 +75,7 @@ func GetInfoWaiter() (*VMInfoWaiterStruct, error) {
 	if vmInfoWaiter.listner == nil {
 		listener, err := net.Listen("tcp", ":0")
 		if err != nil {
-			return nil, fmt.Errorf("Failed to open a tcp connection : %s", err.Error())
+			return nil, fmt.Errorf("failed to open a tcp connection : %s", err.Error())
 		}
 		vmInfoWaiter.port = listener.Addr().(*net.TCPAddr).Port
 		vmInfoWaiter.listner = &listener
@@ -97,7 +97,7 @@ func infoHandler() {
 		go func(net.Conn) {
 			defer func() {
 				if err := conn.Close(); err != nil {
-					fmt.Printf("Failed to close the tcp connection: %s", err.Error())
+					fmt.Printf("failed to close the tcp connection: %s", err.Error())
 				}
 			}()
 
@@ -121,7 +121,7 @@ func infoHandler() {
 			channel, found := vmInfoWaiter.chansByName[hostName]
 			vmInfoWaiter.mutex.Unlock()
 			if !found {
-				panic(fmt.Sprintf("Info handler, Recived info from an unregisterd host: \n%s", message))
+				panic(fmt.Sprintf("Info handler, Received info from an unregistered host: \n%s", message))
 			}
 			channel <- info
 			err = vmInfoWaiter.deregister(hostName)

@@ -73,14 +73,16 @@ var (
 	alternateAPIConsumerKey       string
 )
 
-// provider is the providerementation of the OVH provider
+// provider is the provider implementation of the OVH provider
 type provider struct {
 	*openstack.Stack
 
 	ExternalNetworkID string
+
+	tenantParameters map[string]interface{}
 }
 
-// New creates a new instance of cloudferro provider
+// New creates a new instance of ovh provider
 func New() providerapi.Provider {
 	return &provider{}
 }
@@ -208,7 +210,10 @@ func (p *provider) Build(params map[string]interface{}) (providerapi.Provider, e
 		}
 	}
 
-	newP := &provider{Stack: stack}
+	newP := &provider{
+		Stack:            stack,
+		tenantParameters: params,
+	}
 	err = stack.InitDefaultSecurityGroup()
 	if err != nil {
 		return nil, err
@@ -284,7 +289,7 @@ func (p *provider) ListTemplates(all bool) ([]resources.HostTemplate, error) {
 	// check flavor disponibilities through OVH-API
 	authOpts, err := p.GetAuthenticationOptions()
 	if err != nil {
-		log.Warn(fmt.Sprintf("Failed to get Authentication options, flavors availability won't be checked: %v", err))
+		log.Warn(fmt.Sprintf("failed to get Authentication options, flavors availability won't be checked: %v", err))
 		return allTemplates, nil
 	}
 	service := authOpts.GetString("TenantID")
@@ -338,6 +343,15 @@ func (p *provider) CreateNetwork(req resources.NetworkRequest) (*resources.Netwo
 
 func (p *provider) GetName() string {
 	return "ovh"
+}
+
+func (p *provider) GetTenantParameters() map[string]interface{} {
+	return p.tenantParameters
+}
+
+// GetCapabilities returns the capabilities of the provider
+func (p *provider) GetCapabilities() providers.Capabilities {
+	return providers.Capabilities{}
 }
 
 func init() {

@@ -42,6 +42,8 @@ type provider struct {
 
 	SecurityGroup     *secgroups.SecurityGroup
 	ExternalNetworkID string
+
+	tenantParameters map[string]interface{}
 }
 
 // New creates a new instance of pure openstack provider
@@ -68,7 +70,7 @@ func (p *provider) Build(params map[string]interface{}) (providerapi.Provider, e
 	}
 	defaultImage, _ := compute["DefaultImage"].(string)
 	dnsServers, _ := network["DNSServers"].([]string)
-	if len(dnsServers) <= 0 {
+	if len(dnsServers) == 0 {
 		dnsServers = []string{"8.8.8.8", "1.1.1.1"}
 	}
 	operatorUsername := resources.DefaultUser
@@ -114,7 +116,10 @@ func (p *provider) Build(params map[string]interface{}) (providerapi.Provider, e
 	if err != nil {
 		return nil, err
 	}
-	newP := &provider{Stack: stack}
+	newP := &provider{
+		Stack:            stack,
+		tenantParameters: params,
+	}
 
 	err = stack.InitDefaultSecurityGroup()
 	if err != nil {
@@ -218,6 +223,18 @@ func (p *provider) ListImages(all bool) ([]resources.Image, error) {
 // GetName returns the providerName
 func (p *provider) GetName() string {
 	return "openstack"
+}
+
+// GetTenantParameters returns the tenant parameters as-is
+func (p *provider) GetTenantParameters() map[string]interface{} {
+	return p.tenantParameters
+}
+
+// GetCapabilities returns the capabilities of the provider
+func (p *provider) GetCapabilities() providers.Capabilities {
+	return providers.Capabilities{
+		PrivateVirtualIP: true,
+	}
 }
 
 // init registers the openstack provider

@@ -23,10 +23,10 @@ import (
 	gc "github.com/gophercloud/gophercloud"
 	gcos "github.com/gophercloud/gophercloud/openstack"
 	"github.com/gophercloud/gophercloud/openstack/identity/v3/projects"
-	secgroups "github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/security/groups"
 
 	"github.com/CS-SI/SafeScale/lib/server/iaas/stacks"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/stacks/openstack"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 )
 
 // Stack is the implementation for huaweicloud cloud stack
@@ -41,10 +41,6 @@ type Stack struct {
 	cfgOpts stacks.ConfigurationOptions
 	// Instance of the VPC
 	vpc *VPC
-	// defaultSecurityGroup contains the name of the default security group for the VPC
-	defaultSecurityGroupName string
-	// SecurityGroup is an instance of the default security group
-	SecurityGroup *secgroups.SecGroup
 }
 
 // New authenticates and return interface Stack
@@ -52,7 +48,7 @@ func New(auth stacks.AuthenticationOptions, cfg stacks.ConfigurationOptions) (*S
 	// gophercloud doesn't know how to determine Auth API version to use for FlexibleEngine.
 	// So we help him to.
 	if auth.IdentityEndpoint == "" {
-		panic("auth.IdentityEndpoint is empty!")
+		return nil, scerr.InvalidParameterError("auth.IdentityEndpoint", "cannot be empty string")
 	}
 
 	authOptions := auth
@@ -125,7 +121,7 @@ func (s *Stack) initVPC() error {
 		CIDR: s.authOpts.VPCCIDR,
 	})
 	if err != nil {
-		return fmt.Errorf("Failed to initialize VPC '%s': %s", s.authOpts.VPCName, openstack.ProviderErrorToString(err))
+		return fmt.Errorf("failed to initialize VPC '%s': %s", s.authOpts.VPCName, openstack.ProviderErrorToString(err))
 	}
 	s.vpc = vpc
 	return nil
@@ -137,7 +133,7 @@ func (s *Stack) findVPCID() (*string, error) {
 	found := false
 	routers, err := s.Stack.ListRouters()
 	if err != nil {
-		return nil, fmt.Errorf("Error listing routers: %s", openstack.ProviderErrorToString(err))
+		return nil, fmt.Errorf("error listing routers: %s", openstack.ProviderErrorToString(err))
 	}
 	for _, r := range routers {
 		if r.Name == s.authOpts.VPCName {
@@ -146,7 +142,7 @@ func (s *Stack) findVPCID() (*string, error) {
 			break
 		}
 	}
-	if found && router != nil{
+	if found && router != nil {
 		return &router.ID, nil
 	}
 	return nil, nil

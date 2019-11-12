@@ -73,16 +73,22 @@ var (
 )
 
 func minimumRequiredServers(task concurrency.Task, foreman control.Foreman) (int, int, int) {
-	var privateNodeCount int
+	var (
+		privateNodeCount int
+		masterNodeCount  int
+	)
 	switch foreman.Cluster().GetIdentity(task).Complexity {
 	case Complexity.Small:
 		privateNodeCount = 1
+		masterNodeCount = 1
 	case Complexity.Normal:
 		privateNodeCount = 3
+		masterNodeCount = 2
 	case Complexity.Large:
 		privateNodeCount = 7
+		masterNodeCount = 3
 	}
-	return 1, privateNodeCount, 0
+	return masterNodeCount, privateNodeCount, 0
 }
 
 func gatewaySizing(task concurrency.Task, foreman control.Foreman) pb.HostDefinition {
@@ -117,8 +123,10 @@ func defaultImage(task concurrency.Task, foreman control.Foreman) string {
 
 // getTemplateBox
 func getTemplateBox() (*rice.Box, error) {
-	var b *rice.Box
-	var err error
+	var (
+		b   *rice.Box
+		err error
+	)
 	anon := templateBox.Load()
 	if anon == nil {
 		// Note: path MUST be literal for rice to work
@@ -143,6 +151,13 @@ func getGlobalSystemRequirements(task concurrency.Task, foreman control.Foreman)
 			return "", err
 		}
 
+		// We will need information about cluster network
+		cluster := foreman.Cluster()
+		netCfg, err := cluster.GetNetworkConfig(task)
+		if err != nil {
+			return "", err
+		}
+
 		// get file contents as string
 		tmplString, err := b.String("boh_install_requirements.sh")
 		if err != nil {
@@ -155,10 +170,9 @@ func getGlobalSystemRequirements(task concurrency.Task, foreman control.Foreman)
 			return "", fmt.Errorf("error parsing script template: %s", err.Error())
 		}
 		dataBuffer := bytes.NewBufferString("")
-		cluster := foreman.Cluster()
 		identity := cluster.GetIdentity(task)
 		data := map[string]interface{}{
-			"CIDR":          cluster.GetNetworkConfig(task).CIDR,
+			"CIDR":          netCfg.CIDR,
 			"CladmPassword": identity.AdminPassword,
 			"SSHPublicKey":  identity.Keypair.PublicKey,
 			"SSHPrivateKey": identity.Keypair.PrivateKey,

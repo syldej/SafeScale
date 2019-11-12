@@ -19,6 +19,7 @@ package commands
 import (
 	"bufio"
 	"fmt"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 	"os"
 	"os/exec"
 
@@ -28,7 +29,6 @@ import (
 	"github.com/CS-SI/SafeScale/cli/perform/enums/ExitCode"
 	"github.com/CS-SI/SafeScale/lib/server/cluster"
 	clusterapi "github.com/CS-SI/SafeScale/lib/server/cluster/api"
-	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
 )
 
@@ -58,10 +58,10 @@ func RebrandCommand(command string) string {
 // 	if err != nil {
 // 		output, _, err := system.ExtractRetCode(err)
 // 		if err != nil {
-// 			msg := fmt.Sprintf("Failed to extract return code: %s", err.Error())
+// 			msg := fmt.Sprintf("failed to extract return code: %s", err.Error())
 // 			return cli.NewExitError(msg, int(ExitCode.Run))
 // 		}
-// 		msg := fmt.Sprintf("Failed to execute command: %s", output)
+// 		msg := fmt.Sprintf("failed to execute command: %s", output)
 // 		return cli.NewExitError(msg, int(ExitCode.Run))
 // 	}
 // 	return nil
@@ -105,12 +105,12 @@ func extractClusterArgument(c *cli.Context) error {
 		}
 		clusterInstance, err = cluster.Load(concurrency.RootTask(), clusterName)
 		if err != nil {
-			if _, ok := err.(resources.ErrResourceNotFound); ok {
+			if _, ok := err.(scerr.ErrNotFound); ok {
 				msg := fmt.Sprintf("Cluster '%s' not found\n", clusterName)
 				return cli.NewExitError(msg, int(ExitCode.NotFound))
 			}
 
-			msg := fmt.Sprintf("Failed to get cluster '%s' information: %s\n", clusterName, err.Error())
+			msg := fmt.Sprintf("failed to get cluster '%s' information: %s\n", clusterName, err.Error())
 			return cli.NewExitError(msg, int(ExitCode.RPC))
 		}
 		if c.Command.HasName("create") {

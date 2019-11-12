@@ -18,6 +18,7 @@ package nfs
 
 import (
 	"fmt"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 
 	"github.com/CS-SI/SafeScale/lib/system"
 	"github.com/CS-SI/SafeScale/lib/system/nfs/enums/SecurityFlavor"
@@ -28,10 +29,10 @@ type Server struct {
 	SSHConfig *system.SSHConfig
 }
 
-// NewServer instanciates a new nfs.Server struct
-func NewServer(sshconfig *system.SSHConfig) (*Server, error) {
+// NewServer instantiates a new nfs.Server struct
+func NewServer(sshconfig *system.SSHConfig) (srv *Server, err error) {
 	if sshconfig == nil {
-		return nil, fmt.Errorf("invalid parameter: 'sshconfig' can't be nil")
+		return nil, scerr.InvalidParameterError("sshconfig", "cannot be nil")
 	}
 
 	server := Server{
@@ -55,7 +56,7 @@ func (s *Server) Install() error {
 func (s *Server) AddShare(path string, secutityModes []string, readOnly, rootSquash, secure, async, noHide, crossMount, subtreeCheck bool) error {
 	share, err := NewShare(s, path)
 	if err != nil {
-		return fmt.Errorf("Failed to create the share : %s", err.Error())
+		return fmt.Errorf("failed to create the share : %s", err.Error())
 	}
 
 	acl := ExportACL{
@@ -86,7 +87,7 @@ func (s *Server) AddShare(path string, secutityModes []string, readOnly, rootSqu
 		case "krb5p":
 			acl.SecurityModes = append(acl.SecurityModes, SecurityFlavor.Krb5p)
 		default:
-			return fmt.Errorf("Can't add the share, %s is not a valid security mode", securityMode)
+			return fmt.Errorf("cannot add the share, %s is not a valid security mode", securityMode)
 		}
 	}
 

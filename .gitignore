@@ -44,6 +44,12 @@ lib/Pipfile.lock
 *.new
 *_results.log
 
+# ignore version files
+cli/perform/version.go
+cli/safescale/version.go
+cli/safescaled/version.go
+cli/scanner/version.go
+
 vendor
 Gopkg.lock
 
@@ -89,3 +95,9 @@ cli/scanner/Test*
 Test Results - client_test_go\.html
 
 
+
+lib/security/gateway/client/safe-security
+
+lib/server/iaas/resources/userdata/version.go
+
+lib/system/version.go

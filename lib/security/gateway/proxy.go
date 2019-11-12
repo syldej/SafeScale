@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"strings"
 
-	oidc "github.com/coreos/go-oidc"
+	"github.com/coreos/go-oidc"
 	"github.com/gobwas/glob"
 	"github.com/gorilla/websocket"
 	uuid "github.com/satori/go.uuid"
@@ -81,12 +81,18 @@ func authenticate(token string) (string, int) {
 func authorize(email, service, resource, method string) bool {
 
 	da := model.NewDataAccess(cfg.DatabaseDialect, cfg.DatabaseDSN)
-	srv := da.GetServiceByName(service)
+	srv, err := da.GetServiceByName(service)
+	if err != nil {
+		return false
+	}
 	if srv == nil {
 		return false
 	}
 
-	permissions := da.GetUserAccessPermissionsByService(email, service)
+	permissions, err := da.GetUserAccessPermissionsByService(email, service)
+	if err != nil {
+		return false
+	}
 
 	for _, permission := range permissions {
 		pattern := permission.ResourcePattern
@@ -104,9 +110,12 @@ func authorize(email, service, resource, method string) bool {
 
 func getServiceURL(service, resource string) (*url.URL, error) {
 	da := model.NewDataAccess(cfg.DatabaseDialect, cfg.DatabaseDSN)
-	srv := da.GetServiceByName(service)
+	srv, err := da.GetServiceByName(service)
+	if err != nil {
+		return nil, err
+	}
 	if srv == nil {
-		return nil, fmt.Errorf("No route define to serve resource %s from service %s", service, resource)
+		return nil, fmt.Errorf("no route define to serve resource %s from service %s", service, resource)
 	}
 	surl := strings.Join([]string{srv.BaseURL, resource}, "/")
 	return url.Parse(surl)
@@ -141,13 +150,13 @@ func httpProxyFunc(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	proxyUrl, err := getServiceURL(info.service, info.resource)
+	proxyURL, err := getServiceURL(info.service, info.resource)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
 		return
 	}
 
-	httpForward(w, r, proxyUrl)
+	httpForward(w, r, proxyURL)
 
 }
 
@@ -211,13 +220,13 @@ func wsProxyFunc(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	theUrl, err := getServiceURL(info.service, info.resource)
+	theURL, err := getServiceURL(info.service, info.resource)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
 		return
 	}
 	header := http.Header{}
-	cDest, _, err := websocket.DefaultDialer.Dial(theUrl.String(), header)
+	cDest, _, err := websocket.DefaultDialer.Dial(theURL.String(), header)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
 		return
@@ -255,9 +264,9 @@ func loadConfig() (cfg *proxyConfig, err error) {
 	viper.AddConfigPath("/etc/safescale/")  // path to look for the config file in
 	viper.AddConfigPath("$HOME/.safescale") // call multiple times to add many search paths
 	viper.AddConfigPath(".")                // optionally look for config in the working directory
-	err = viper.ReadInConfig()             // Find and read the config file
+	err = viper.ReadInConfig()              // Find and read the config file
 	if err != nil {                         // Handle errors reading the config file
-		return nil, fmt.Errorf("Fatal error reading config file: %s", err)
+		return nil, fmt.Errorf("fatal error reading config file: %s", err)
 	}
 
 	cfg = &proxyConfig{
@@ -286,7 +295,7 @@ func (p *proxyConfig) AuthenticationEnabled() bool {
 func Start(bindingURL string, failure chan bool) {
 
 	cfg, err := loadConfig()
-	failure <- (err != nil)
+	failure <- err != nil
 
 	if err != nil {
 		log.Error(err)

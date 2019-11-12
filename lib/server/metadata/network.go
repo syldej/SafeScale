@@ -25,10 +25,12 @@ import (
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/NetworkProperty"
 	propsv1 "github.com/CS-SI/SafeScale/lib/server/iaas/resources/properties/v1"
-	"github.com/CS-SI/SafeScale/lib/utils"
+	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
 	"github.com/CS-SI/SafeScale/lib/utils/metadata"
 	"github.com/CS-SI/SafeScale/lib/utils/retry"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 	"github.com/CS-SI/SafeScale/lib/utils/serialize"
+	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 )
 
 const (
@@ -47,10 +49,14 @@ type Network struct {
 }
 
 // NewNetwork creates an instance of network.Metadata
-func NewNetwork(svc iaas.Service) *Network {
-	return &Network{
-		item: metadata.NewItem(svc, networksFolderName),
+func NewNetwork(svc iaas.Service) (*Network, error) {
+	aNet, err := metadata.NewItem(svc, networksFolderName)
+	if err != nil {
+		return nil, err
 	}
+	return &Network{
+		item: aNet,
+	}, nil
 }
 
 // GetService returns the provider service used
@@ -59,20 +65,26 @@ func (m *Network) GetService() iaas.Service {
 }
 
 // GetPath returns the path in Object Storage where the item is stored
-func (m *Network) GetPath() string {
-	if m.item == nil {
-		panic("m.item is nil!")
+func (m *Network) GetPath() (string, error) {
+	if m == nil {
+		return "", scerr.InvalidInstanceError()
 	}
-	return m.item.GetPath()
+	if m.item == nil {
+		return "", scerr.InvalidParameterError("m.item", "cannot be nil")
+	}
+	return m.item.GetPath(), nil
 }
 
 // Carry links a Network instance to the Metadata instance
-func (m *Network) Carry(network *resources.Network) *Network {
+func (m *Network) Carry(network *resources.Network) (*Network, error) {
+	if m == nil {
+		return nil, scerr.InvalidInstanceError()
+	}
 	if network == nil {
-		panic("network parameter is nil!")
+		return nil, scerr.InvalidParameterError("network", "cannot be nil")
 	}
 	if m.item == nil {
-		panic("m.item is nil!")
+		return nil, scerr.InvalidParameterError("m.item", "m.item cannot be nil")
 	}
 	if network.Properties == nil {
 		network.Properties = serialize.NewJSONProperties("resources")
@@ -81,49 +93,92 @@ func (m *Network) Carry(network *resources.Network) *Network {
 	m.id = &network.ID
 	m.name = &network.Name
 	//m.inside = metadata.NewFolder(m.item.GetService(), strings.Trim(m.item.GetPath()+"/"+*m.id, "/"))
-	return m
+	return m, nil
 }
 
 // Get returns the resources.Network instance linked to metadata
-func (m *Network) Get() *resources.Network {
-	if m.item == nil {
-		panic("m.item is nil!")
+func (m *Network) Get() (*resources.Network, error) {
+	if m == nil {
+		return nil, scerr.InvalidInstanceError()
 	}
-	return m.item.Get().(*resources.Network)
+	if m.item == nil {
+		return nil, scerr.InvalidInstanceContentError("m.item", "cannot be nil")
+	}
+	return m.item.Get().(*resources.Network), nil
 }
 
 // Write updates the metadata corresponding to the network in the Object Storage
-func (m *Network) Write() error {
+func (m *Network) Write() (err error) {
+	if m == nil {
+		return scerr.InvalidInstanceError()
+	}
 	if m.item == nil {
-		panic("m.item is nil!")
+		return scerr.InvalidParameterError("m.item", "cannot be nil")
 	}
-	err := m.item.WriteInto(ByIDFolderName, *m.id)
-	if err != nil {
-		return err
+
+	tracer := concurrency.NewTracer(nil, "", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	err1 := m.item.WriteInto(ByIDFolderName, *m.id)
+	err2 := m.item.WriteInto(ByNameFolderName, *m.name)
+
+	if err1 != nil {
+		return err1
 	}
-	return m.item.WriteInto(ByNameFolderName, *m.name)
+	if err2 != nil {
+		return err2
+	}
+	return nil
 }
 
 // Reload reloads the content of the Object Storage, overriding what is in the metadata instance
-func (m *Network) Reload() error {
-	err := m.ReadByID(*m.id)
+func (m *Network) Reload() (err error) {
+	if m == nil {
+		return scerr.InvalidInstanceError()
+	}
+
+	tracer := concurrency.NewTracer(nil, "", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	err = m.ReadByID(*m.id)
 	if err != nil {
-		if _, ok := err.(utils.ErrNotFound); ok {
-			return utils.NotFoundError(fmt.Sprintf("the metadata of Network '%s' vanished", *m.name))
+		if _, ok := err.(scerr.ErrNotFound); ok {
+			return scerr.NotFoundError(fmt.Sprintf("the metadata of Network '%s' vanished", *m.name))
 		}
 		return err
 	}
 	return nil
 }
 
+// ReadByReference tries to read first using 'ref' as an ID then as a name
+func (m *Network) ReadByReference(ref string) (err error) {
+	errID := m.ReadByID(ref)
+	if errID != nil {
+		errName := m.ReadByName(ref)
+		if errName != nil {
+			return errName
+		}
+	}
+	return nil
+}
+
 // ReadByID reads the metadata of a network identified by ID from Object Storage
-func (m *Network) ReadByID(id string) error {
+func (m *Network) ReadByID(id string) (err error) {
+	if m == nil {
+		return scerr.InvalidInstanceError()
+	}
 	if m.item == nil {
-		panic("m.item is nil!")
+		return scerr.InvalidParameterError("m.item", "cannot be nil")
 	}
 
+	tracer := concurrency.NewTracer(nil, "("+id+")", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
 	network := resources.NewNetwork()
-	err := m.item.ReadFrom(ByIDFolderName, id, func(buf []byte) (serialize.Serializable, error) {
+	err = m.item.ReadFrom(ByIDFolderName, id, func(buf []byte) (serialize.Serializable, error) {
 		err := network.Deserialize(buf)
 		if err != nil {
 			return nil, err
@@ -140,13 +195,23 @@ func (m *Network) ReadByID(id string) error {
 }
 
 // ReadByName reads the metadata of a network identified by name
-func (m *Network) ReadByName(name string) error {
+func (m *Network) ReadByName(name string) (err error) {
+	if m == nil {
+		return scerr.InvalidInstanceError()
+	}
 	if m.item == nil {
-		panic("m.item is nil!")
+		return scerr.InvalidParameterError("m.item", "cannot be nil")
+	}
+	if name == "" {
+		return scerr.InvalidParameterError("name", "cannot be empty string")
 	}
 
+	tracer := concurrency.NewTracer(nil, "("+name+")", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
 	network := resources.NewNetwork()
-	err := m.item.ReadFrom(ByNameFolderName, name, func(buf []byte) (serialize.Serializable, error) {
+	err = m.item.ReadFrom(ByNameFolderName, name, func(buf []byte) (serialize.Serializable, error) {
 		err := network.Deserialize(buf)
 		if err != nil {
 			return nil, err
@@ -163,25 +228,48 @@ func (m *Network) ReadByName(name string) error {
 }
 
 // Delete deletes the metadata corresponding to the network
-func (m *Network) Delete() error {
+func (m *Network) Delete() (err error) {
+	if m == nil {
+		return scerr.InvalidInstanceError()
+	}
 	if m.item == nil {
-		panic("m.item is nil!")
+		return scerr.InvalidParameterError("m.item", "cannot be nil")
 	}
 
+	tracer := concurrency.NewTracer(nil, "", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
 	// Delete the entry in 'ByIDFolderName' folder
-	err := m.item.DeleteFrom(ByIDFolderName, *m.id)
-	if err != nil {
-		return err
-	}
+	err1 := m.item.DeleteFrom(ByIDFolderName, *m.id)
 	// Delete the entry in 'ByNameFolderName' folder
-	return m.item.DeleteFrom(ByNameFolderName, *m.name)
+	err2 := m.item.DeleteFrom(ByNameFolderName, *m.name)
+
+	if err1 != nil {
+		return err1
+	}
+	if err2 != nil {
+		return err2
+	}
+
+	return nil
 }
 
 // Browse walks through all the metadata objects in network
-func (m *Network) Browse(callback func(*resources.Network) error) error {
-	if m.item == nil {
-		panic("m.item is nil!")
+func (m *Network) Browse(callback func(*resources.Network) error) (err error) {
+	if m == nil {
+		return scerr.InvalidInstanceError()
 	}
+	if m.item == nil {
+		return scerr.InvalidParameterError("m.item", "cannot be nil")
+	}
+	if callback == nil {
+		return scerr.InvalidParameterError("callback", "cannot be nil")
+	}
+
+	tracer := concurrency.NewTracer(nil, "", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
 	return m.item.BrowseInto(ByIDFolderName, func(buf []byte) error {
 		network := resources.Network{}
@@ -194,8 +282,22 @@ func (m *Network) Browse(callback func(*resources.Network) error) error {
 }
 
 // AttachHost links host ID to the network
-func (m *Network) AttachHost(host *resources.Host) error {
-	network := m.Get()
+func (m *Network) AttachHost(host *resources.Host) (err error) {
+	if m == nil {
+		return scerr.InvalidInstanceError()
+	}
+	if host == nil {
+		return scerr.InvalidParameterError("host", "cannot be nil")
+	}
+
+	tracer := concurrency.NewTracer(nil, "("+host.Name+")", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	network, err := m.Get()
+	if err != nil {
+		return err
+	}
 	return network.Properties.LockForWrite(NetworkProperty.HostsV1).ThenUse(func(v interface{}) error {
 		networkHostsV1 := v.(*propsv1.NetworkHosts)
 		networkHostsV1.ByID[host.ID] = host.Name
@@ -205,9 +307,23 @@ func (m *Network) AttachHost(host *resources.Host) error {
 }
 
 // DetachHost unlinks host ID from network
-func (m *Network) DetachHost(hostID string) error {
-	network := m.Get()
-	err := network.Properties.LockForWrite(NetworkProperty.HostsV1).ThenUse(func(v interface{}) error {
+func (m *Network) DetachHost(hostID string) (err error) {
+	if m == nil {
+		return scerr.InvalidInstanceError()
+	}
+	if hostID == "" {
+		return scerr.InvalidParameterError("hostID", "cannot be empty string")
+	}
+
+	tracer := concurrency.NewTracer(nil, "('"+hostID+"')", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	network, err := m.Get()
+	if err != nil {
+		return err
+	}
+	err = network.Properties.LockForWrite(NetworkProperty.HostsV1).ThenUse(func(v interface{}) error {
 		networkHostsV1 := v.(*propsv1.NetworkHosts)
 		hostName, found := networkHostsV1.ByID[hostID]
 		if found {
@@ -223,10 +339,20 @@ func (m *Network) DetachHost(hostID string) error {
 }
 
 // ListHosts returns the list of resources.Host attached to the network (excluding gateway)
-func (m *Network) ListHosts() ([]*resources.Host, error) {
-	network := m.Get()
-	var list []*resources.Host
-	err := network.Properties.LockForRead(NetworkProperty.HostsV1).ThenUse(func(v interface{}) error {
+func (m *Network) ListHosts() (list []*resources.Host, err error) {
+	if m == nil {
+		return nil, scerr.InvalidInstanceError()
+	}
+
+	tracer := concurrency.NewTracer(nil, "", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	network, err := m.Get()
+	if err != nil {
+		return nil, err
+	}
+	err = network.Properties.LockForRead(NetworkProperty.HostsV1).ThenUse(func(v interface{}) error {
 		networkHostsV1 := v.(*propsv1.NetworkHosts)
 		for id := range networkHostsV1.ByID {
 			mh, err := LoadHost(m.item.GetService(), id)
@@ -234,7 +360,11 @@ func (m *Network) ListHosts() ([]*resources.Host, error) {
 				return err
 			}
 			if mh != nil {
-				list = append(list, mh.Get())
+				mhm, merr := mh.Get()
+				if merr != nil {
+					return merr
+				}
+				list = append(list, mhm)
 			} else {
 				log.Warnf("Host metadata for '%s' not found!", id)
 			}
@@ -258,49 +388,95 @@ func (m *Network) Release() {
 }
 
 // SaveNetwork saves the Network definition in Object Storage
-func SaveNetwork(svc iaas.Service, net *resources.Network) (*Network, error) {
-	mn := NewNetwork(svc)
-	return mn, mn.Carry(net).Write()
+func SaveNetwork(svc iaas.Service, net *resources.Network) (mn *Network, err error) {
+	if svc == nil {
+		return nil, scerr.InvalidParameterError("svc", "cannot be nil")
+	}
+	if net == nil {
+		return nil, scerr.InvalidParameterError("net", "cannot be nil")
+	}
+
+	tracer := concurrency.NewTracer(nil, "", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	mn, err = NewNetwork(svc)
+	if err != nil {
+		return nil, err
+	}
+
+	mnm, err := mn.Carry(net)
+	if err != nil {
+		return nil, err
+	}
+
+	return mn, mnm.Write()
 }
 
 // RemoveNetwork removes the Network definition from Object Storage
-func RemoveNetwork(svc iaas.Service, net *resources.Network) error {
-	return NewNetwork(svc).Carry(net).Delete()
+func RemoveNetwork(svc iaas.Service, net *resources.Network) (err error) {
+	if svc == nil {
+		return scerr.InvalidParameterError("svc", "cannot be nil")
+	}
+	if net == nil {
+		return scerr.InvalidParameterError("net", "cannot be nil")
+	}
+
+	tracer := concurrency.NewTracer(nil, "(<iaas.Service>, "+net.Name+")", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	aNet, err := NewNetwork(svc)
+	if err != nil {
+		return err
+	}
+
+	aNetm, err := aNet.Carry(net)
+	if err != nil {
+		return err
+	}
+
+	return aNetm.Delete()
 }
 
 // LoadNetwork gets the Network definition from Object Storage
 // logic: Read by ID; if error is ErrNotFound then read by name; if error is ErrNotFound return this error
 //        In case of any other error, abort the retry to propagate the error
 //        If retry times out, return errNotFound
-func LoadNetwork(svc iaas.Service, ref string) (*Network, error) {
-	mn := NewNetwork(svc)
-	var innerErr error
-	err := retry.WhileUnsuccessfulDelay1Second(
+func LoadNetwork(svc iaas.Service, ref string) (mn *Network, err error) {
+	if svc == nil {
+		return nil, scerr.InvalidParameterError("svc", "cannot be nil")
+	}
+	if ref == "" {
+		return nil, scerr.InvalidParameterError("ref", "cannot be empty string")
+	}
+
+	tracer := concurrency.NewTracer(nil, "(<iaas.Service>, '"+ref+"')", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	mn, err = NewNetwork(svc)
+	if err != nil {
+		return nil, err
+	}
+	retryErr := retry.WhileUnsuccessfulDelay1Second(
 		func() error {
-			innerErr = mn.ReadByID(ref)
+			innerErr := mn.ReadByReference(ref)
 			if innerErr != nil {
-				if _, ok := innerErr.(utils.ErrNotFound); ok {
-					innerErr = mn.ReadByName(ref)
-					if innerErr != nil {
-						if _, ok := innerErr.(utils.ErrNotFound); ok {
-							return innerErr
-						}
-					}
+				if _, ok := innerErr.(scerr.ErrNotFound); ok {
+					return retry.StopRetryError("no metadata found", innerErr)
 				}
+				return innerErr
 			}
+
 			return nil
 		},
-		2*utils.GetDefaultDelay(),
+		2*temporal.GetDefaultDelay(),
 	)
-	// If retry timed out, log it and return error ErrNotFound
-	if _, ok := err.(retry.ErrTimeout); ok {
-		log.Debugf("timeout reading metadata of network '%s'", ref)
-		return nil, utils.NotFoundError(fmt.Sprintf("failed to load metadata of network '%s'", ref))
+	if retryErr != nil {
+		return nil, retryErr
 	}
-	// Returns the error different than ErrNotFound to caller
-	if innerErr != nil {
-		return nil, innerErr
-	}
+
 	return mn, nil
 }
 
@@ -312,12 +488,26 @@ type Gateway struct {
 }
 
 // NewGateway creates an instance of metadata.Gateway
-func NewGateway(svc iaas.Service, networkID string) (*Gateway, error) {
-	network := NewNetwork(svc)
-	err := network.ReadByID(networkID)
+func NewGateway(svc iaas.Service, networkID string) (gw *Gateway, err error) {
+	if svc == nil {
+		return nil, scerr.InvalidParameterError("svc", "cannot be nil")
+	}
+	if networkID == "" {
+		return nil, scerr.InvalidParameterError("networkID", "cannot be empty string")
+	}
+
+	tracer := concurrency.NewTracer(nil, "(<iaas.Service>, '"+networkID+"')", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	network, err := NewNetwork(svc)
 	if err != nil {
-		if _, ok := err.(utils.ErrNotFound); ok {
-			return nil, utils.NotFoundError("failed to find metadata of network using gateway")
+		return nil, err
+	}
+	err = network.ReadByID(networkID)
+	if err != nil {
+		if _, ok := err.(scerr.ErrNotFound); ok {
+			return nil, scerr.NotFoundError("failed to find metadata of network using gateway")
 		}
 		return nil, err
 	}
@@ -328,44 +518,78 @@ func NewGateway(svc iaas.Service, networkID string) (*Gateway, error) {
 }
 
 // Carry links a Network instance to the Metadata instance
-func (mg *Gateway) Carry(host *resources.Host) *Gateway {
+func (mg *Gateway) Carry(host *resources.Host) (gw *Gateway, err error) {
 	if mg.host == nil {
-		mg.host = NewHost(mg.network.GetService())
+		mg.host, err = NewHost(mg.network.GetService())
+		if err != nil {
+			return nil, err
+		}
 	}
-	mg.host.Carry(host)
-	return mg
+
+	_, err = mg.host.Carry(host)
+	if err != nil {
+		return nil, err
+	}
+
+	return mg, nil
 }
 
 // Get returns the *resources.Host linked to the metadata
-func (mg *Gateway) Get() *resources.Host {
-	if mg.host == nil {
-		panic("mg.host is nil!")
+func (mg *Gateway) Get() (*resources.Host, error) {
+	if mg == nil {
+		return nil, scerr.InvalidInstanceError()
 	}
-	return mg.host.Get()
+	if mg.host == nil {
+		return nil, scerr.InvalidInstanceContentError("mg.host", "cannot be nil")
+	}
+
+	mgm, err := mg.host.Get()
+	if err != nil {
+		return nil, err
+	}
+
+	return mgm, nil
 }
 
 // Write updates the metadata corresponding to the network in the Object Storage
 // A Gateway is a particular host : we want it listed in hosts, but not listed as attached to the network
 func (mg *Gateway) Write() error {
 	if mg.host == nil {
-		panic("mg.host is nil!")
+		return scerr.InvalidInstanceContentError("mg.host", "cannot be nil")
 	}
 	return mg.host.Write()
 }
 
 // Read reads the metadata of a gateway of a network identified by ID from Object Storage
-func (mg *Gateway) Read() error {
-	if mg.network == nil {
-		panic("mg.network is nil!")
+func (mg *Gateway) Read() (err error) {
+	if mg == nil {
+		return scerr.InvalidInstanceError()
 	}
-	err := mg.network.Reload()
+	if mg.network == nil {
+		return scerr.InvalidParameterError("mg.network", "cannot be nil")
+	}
+
+	tracer := concurrency.NewTracer(nil, "", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	err = mg.network.Reload()
 	if err != nil {
 		return err
 	}
 	if mg.host == nil {
-		mg.host = NewHost(mg.network.GetService())
+		mg.host, err = NewHost(mg.network.GetService())
+		if err != nil {
+			return err
+		}
 	}
-	err = mg.host.ReadByID(mg.network.Get().GatewayID)
+
+	mgm, err := mg.network.Get()
+	if err != nil {
+		return err
+	}
+
+	err = mg.host.ReadByID(mgm.GatewayID)
 	if err != nil {
 		return err
 	}
@@ -374,11 +598,19 @@ func (mg *Gateway) Read() error {
 
 // Reload reloads the content of the Object Storage, overriding what is in the metadata instance
 // It's advised to Acquire/Release around Reload()...
-func (mg *Gateway) Reload() error {
-	err := mg.Read()
+func (mg *Gateway) Reload() (err error) {
+	if mg == nil {
+		return scerr.InvalidInstanceError()
+	}
+
+	tracer := concurrency.NewTracer(nil, "", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	err = mg.Read()
 	if err != nil {
-		if _, ok := err.(utils.ErrNotFound); ok {
-			return utils.NotFoundError(fmt.Sprintf("metadata about the gateway of network '%s' doesn't exist anymore", mg.networkID))
+		if _, ok := err.(scerr.ErrNotFound); ok {
+			return scerr.NotFoundError(fmt.Sprintf("metadata about the gateway of network '%s' doesn't exist anymore", mg.networkID))
 		}
 		return err
 	}
@@ -386,17 +618,30 @@ func (mg *Gateway) Reload() error {
 }
 
 // Delete updates the metadata of the network concerning the gateway
-func (mg *Gateway) Delete() error {
+func (mg *Gateway) Delete() (err error) {
+	if mg == nil {
+		return scerr.InvalidInstanceError()
+	}
 	if mg.network == nil {
-		panic("mg.network is nil!")
+		return scerr.InvalidParameterError("mg.network", "cannot be nil")
 	}
 	if mg.host == nil {
-		panic("mg.host is nil!")
+		return scerr.InvalidParameterError("mg.host", "cannot be nil")
 	}
 
+	tracer := concurrency.NewTracer(nil, "", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
 	mg.network.Acquire()
-	mg.network.Get().GatewayID = ""
-	err := mg.network.Write()
+
+	mgm, err := mg.network.Get()
+	if err != nil {
+		return err
+	}
+
+	mgm.GatewayID = ""
+	err = mg.network.Write()
 	mg.network.Release()
 	if err != nil {
 		return err
@@ -417,58 +662,97 @@ func (mg *Gateway) Release() {
 }
 
 // LoadGateway returns the metadata of the Gateway of a network
-func LoadGateway(svc iaas.Service, networkID string) (*Gateway, error) {
-	mg, err := NewGateway(svc, networkID)
+func LoadGateway(svc iaas.Service, networkID string) (mg *Gateway, err error) {
+	if svc == nil {
+		return nil, scerr.InvalidParameterError("svc", "cannot be nil")
+	}
+	if networkID == "" {
+		return nil, scerr.InvalidParameterError("networkID", "cannot be empty string")
+	}
+
+	tracer := concurrency.NewTracer(nil, "(<iaas.Service>, '"+networkID+"')", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	mg, err = NewGateway(svc, networkID)
 	if err != nil {
 		return nil, err
 	}
-	var innerErr error
-	err = retry.WhileUnsuccessfulDelay1Second(
+
+	retryErr := retry.WhileUnsuccessfulDelay1Second(
 		func() error {
-			innerErr = mg.Read()
+			innerErr := mg.Read()
 			if innerErr != nil {
-				if _, ok := innerErr.(utils.ErrNotFound); ok {
-					return innerErr
+				if _, ok := innerErr.(scerr.ErrNotFound); ok {
+					return retry.StopRetryError("", innerErr)
 				}
+				return innerErr
 			}
 			return nil
 		},
-		2*utils.GetDefaultDelay(),
+		2*temporal.GetDefaultDelay(),
 	)
-	if err != nil {
-		if _, ok := err.(retry.ErrTimeout); ok {
-			return nil, utils.NotFoundError(fmt.Sprintf("failed to load metadata of gateway for network '%s'", networkID))
+	if retryErr != nil {
+		// If it's not a timeout is something we don't know how to handle yet
+		if _, ok := retryErr.(scerr.ErrTimeout); !ok {
+			return nil, scerr.Cause(retryErr)
 		}
-		return nil, err
+		return nil, retryErr
 	}
-	if innerErr != nil {
-		return nil, innerErr
-	}
+
 	return mg, nil
 }
 
 // SaveGateway saves the metadata of a gateway
-func SaveGateway(svc iaas.Service, host *resources.Host, networkID string) (*Gateway, error) {
-	mg, err := NewGateway(svc, networkID)
+func SaveGateway(svc iaas.Service, host *resources.Host, networkID string) (mg *Gateway, err error) {
+	if svc == nil {
+		return nil, scerr.InvalidParameterError("svc", "cannot be nil")
+	}
+	if host == nil {
+		return nil, scerr.InvalidParameterError("host", "cannot be nil")
+	}
+	if networkID == "" {
+		return nil, scerr.InvalidParameterError("networkID", "cannot be empty string")
+	}
+
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("(<iaas.Service>, %s, '%s'", host.Name, networkID), true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	mg, err = NewGateway(svc, networkID)
 	if err != nil {
 		return nil, err
 	}
 
 	// Update network with gateway info
-	mn := NewNetwork(svc)
+	mn, err := NewNetwork(svc)
+	if err != nil {
+		return nil, err
+	}
+
 	err = mn.ReadByID(networkID)
 	if err != nil {
-		if _, ok := err.(utils.ErrNotFound); ok {
-			return nil, utils.NotFoundError(fmt.Sprintf("metadata about the network '%s' doesn't exist anymore", networkID))
+		if _, ok := err.(scerr.ErrNotFound); ok {
+			return nil, scerr.NotFoundError(fmt.Sprintf("metadata about the network '%s' doesn't exist anymore", networkID))
 		}
 		return nil, err
 	}
-	mn.Get().GatewayID = host.ID
+
+	mnm, err := mn.Get()
+	if err != nil {
+		return nil, err
+	}
+
+	mnm.GatewayID = host.ID
 	err = mn.Write()
 	if err != nil {
 		return nil, err
 	}
 
 	// write gateway
-	return mg, mg.Carry(host).Write()
+	aGw, err := mg.Carry(host)
+	if err != nil {
+		return nil, err
+	}
+	return mg, aGw.Write()
 }

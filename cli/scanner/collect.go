@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
@@ -16,11 +17,16 @@ import (
 
 // StoredCPUInfo ...
 type StoredCPUInfo struct {
-	Id string `bow:"key"`
+	ID string `bow:"key"`
 	CPUInfo
 }
 
 func collect(tenantName string) error {
+	cmd := exec.Command("safescale", "tenant", "set", tenantName)
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
 	serviceProvider, err := iaas.UseService(tenantName)
 	if err != nil {
 		return err
@@ -31,12 +37,15 @@ func collect(tenantName string) error {
 	}
 	region, ok := authOpts.Get("Region")
 	if !ok {
-		return fmt.Errorf("Region value unset")
+		return fmt.Errorf("region value unset")
 	}
 
 	folder := fmt.Sprintf("images/%s/%s", serviceProvider.GetName(), region)
 
-	_ = os.MkdirAll(utils.AbsPathify("$HOME/.safescale/scanner"), 0777)
+	err = os.MkdirAll(utils.AbsPathify("$HOME/.safescale/scanner"), 0777)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	db, err := scribble.New(utils.AbsPathify("$HOME/.safescale/scanner/db"), nil)
 	if err != nil {
@@ -64,7 +73,7 @@ func collect(tenantName string) error {
 				log.Fatal(err)
 			}
 
-			acpu.Id = acpu.ImageID
+			acpu.ID = acpu.ImageID
 
 			err = db.Write(folder, acpu.TemplateName, acpu)
 			if err != nil {

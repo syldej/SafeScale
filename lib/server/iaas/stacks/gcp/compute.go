@@ -25,28 +25,35 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/davecgh/go-spew/spew"
+	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
+	uuid "github.com/satori/go.uuid"
+	"github.com/sirupsen/logrus"
+	"golang.org/x/crypto/ssh"
+	"google.golang.org/api/compute/v1"
+	"google.golang.org/api/googleapi"
+
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/HostProperty"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/HostState"
 	converters "github.com/CS-SI/SafeScale/lib/server/iaas/resources/properties"
 	propsv1 "github.com/CS-SI/SafeScale/lib/server/iaas/resources/properties/v1"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/userdata"
-	common "github.com/CS-SI/SafeScale/lib/utils"
+	"github.com/CS-SI/SafeScale/lib/utils"
+	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
 	"github.com/CS-SI/SafeScale/lib/utils/retry"
-	"github.com/davecgh/go-spew/spew"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
-	"github.com/pkg/errors"
-	uuid "github.com/satori/go.uuid"
-	"github.com/sirupsen/logrus"
-	"golang.org/x/crypto/ssh"
-	"google.golang.org/api/compute/v1"
-	"google.golang.org/api/googleapi"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
+	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 )
 
 //-------------IMAGES---------------------------------------------------------------------------------------------------
 
 // ListImages lists available OS images
 func (s *Stack) ListImages() (images []resources.Image, err error) {
+	if s == nil {
+		return nil, scerr.InvalidInstanceError()
+	}
+
 	compuService := s.ComputeService
 
 	images = []resources.Image{}
@@ -79,6 +86,13 @@ func (s *Stack) ListImages() (images []resources.Image, err error) {
 
 // GetImage returns the Image referenced by id
 func (s *Stack) GetImage(id string) (*resources.Image, error) {
+	if s == nil {
+		return nil, scerr.InvalidInstanceError()
+	}
+	if id == "" {
+		return nil, scerr.InvalidParameterError("id", "cannot be empty string")
+	}
+
 	images, err := s.ListImages()
 	if err != nil {
 		return nil, err
@@ -97,13 +111,17 @@ func (s *Stack) GetImage(id string) (*resources.Image, error) {
 
 // ListTemplates overload OpenStackGcp ListTemplate method to filter wind and flex instance and add GPU configuration
 func (s *Stack) ListTemplates(all bool) (templates []resources.HostTemplate, err error) {
+	if s == nil {
+		return nil, scerr.InvalidInstanceError()
+	}
+
 	compuService := s.ComputeService
 
 	templates = []resources.HostTemplate{}
 
 	token := ""
 	for paginate := true; paginate; {
-		resp, err := compuService.MachineTypes.List(s.GcpConfig.ProjectId, s.GcpConfig.Zone).PageToken(token).Do()
+		resp, err := compuService.MachineTypes.List(s.GcpConfig.ProjectID, s.GcpConfig.Zone).PageToken(token).Do()
 		if err != nil {
 			logrus.Warnf("Can't list public types...: %s", err)
 			break
@@ -117,7 +135,7 @@ func (s *Stack) ListTemplates(all bool) (templates []resources.HostTemplate, err
 					//DiskSize: int(matype.ImageSpaceGb),
 					DiskSize: 0,
 					ID:       strconv.FormatUint(matype.Id, 10),
-					Name:     string(matype.Name),
+					Name:     matype.Name,
 				}
 				templates = append(templates, ht)
 			}
@@ -135,6 +153,13 @@ func (s *Stack) ListTemplates(all bool) (templates []resources.HostTemplate, err
 
 //GetTemplate overload OpenStackGcp GetTemplate method to add GPU configuration
 func (s *Stack) GetTemplate(id string) (*resources.HostTemplate, error) {
+	if s == nil {
+		return nil, scerr.InvalidInstanceError()
+	}
+	if id == "" {
+		return nil, scerr.InvalidParameterError("id", "cannot be empty string")
+	}
+
 	templates, err := s.ListTemplates(true)
 	if err != nil {
 		return nil, err
@@ -153,6 +178,13 @@ func (s *Stack) GetTemplate(id string) (*resources.HostTemplate, error) {
 
 // CreateKeyPair creates and import a key pair
 func (s *Stack) CreateKeyPair(name string) (*resources.KeyPair, error) {
+	if s == nil {
+		return nil, scerr.InvalidInstanceError()
+	}
+	if name == "" {
+		return nil, scerr.InvalidParameterError("name", "cannot be empty string")
+	}
+
 	privateKey, _ := rsa.GenerateKey(rand.Reader, 2048)
 	publicKey := privateKey.PublicKey
 	pub, _ := ssh.NewPublicKey(&publicKey)
@@ -177,28 +209,32 @@ func (s *Stack) CreateKeyPair(name string) (*resources.KeyPair, error) {
 
 // GetKeyPair returns the key pair identified by id
 func (s *Stack) GetKeyPair(id string) (*resources.KeyPair, error) {
-	return nil, fmt.Errorf("Not implemented")
+	return nil, scerr.NotImplementedError("GetKeyPair() not implemented yet")
 }
 
 // ListKeyPairs lists available key pairs
 func (s *Stack) ListKeyPairs() ([]resources.KeyPair, error) {
-	return nil, fmt.Errorf("Not implemented")
+	return nil, scerr.NotImplementedError("ListKeyPairs() not implemented yet")
 }
 
 // DeleteKeyPair deletes the key pair identified by id
 func (s *Stack) DeleteKeyPair(id string) error {
-	return fmt.Errorf("Not implemented")
+	return scerr.NotImplementedError("DeleteKeyPair() not implemented yet")
 }
 
 // CreateHost creates an host satisfying request
 func (s *Stack) CreateHost(request resources.HostRequest) (host *resources.Host, userData *userdata.Content, err error) {
+	if s == nil {
+		return nil, nil, scerr.InvalidInstanceError()
+	}
+
 	userData = userdata.NewContent()
 
 	resourceName := request.ResourceName
 	networks := request.Networks
 	hostMustHavePublicIP := request.PublicIP
 
-	if networks == nil || len(networks) == 0 {
+	if len(networks) == 0 {
 		return nil, userData, fmt.Errorf("the host %s must be on at least one network (even if public)", resourceName)
 	}
 
@@ -207,7 +243,7 @@ func (s *Stack) CreateHost(request resources.HostRequest) (host *resources.Host,
 		id, err := uuid.NewV4()
 		if err != nil {
 			msg := fmt.Sprintf("failed to create host UUID: %+v", err)
-			logrus.Debugf(common.Capitalize(msg))
+			logrus.Debugf(utils.Capitalize(msg))
 			return nil, userData, fmt.Errorf(msg)
 		}
 
@@ -215,12 +251,12 @@ func (s *Stack) CreateHost(request resources.HostRequest) (host *resources.Host,
 		request.KeyPair, err = s.CreateKeyPair(name)
 		if err != nil {
 			msg := fmt.Sprintf("failed to create host key pair: %+v", err)
-			logrus.Debugf(common.Capitalize(msg))
+			logrus.Debugf(utils.Capitalize(msg))
 			return nil, userData, fmt.Errorf(msg)
 		}
 	}
 	if request.Password == "" {
-		password, err := common.GeneratePassword(16)
+		password, err := utils.GeneratePassword(16)
 		if err != nil {
 			return nil, userData, fmt.Errorf("failed to generate password: %s", err.Error())
 		}
@@ -242,7 +278,7 @@ func (s *Stack) CreateHost(request resources.HostRequest) (host *resources.Host,
 			return nil
 		})
 		if err != nil {
-			return nil, userData, errors.Wrap(err, "")
+			return nil, userData, err
 		}
 	}
 
@@ -267,7 +303,7 @@ func (s *Stack) CreateHost(request resources.HostRequest) (host *resources.Host,
 	err = userData.Prepare(*s.Config, request, defaultNetwork.CIDR, "")
 	if err != nil {
 		msg := fmt.Sprintf("failed to prepare user data content: %+v", err)
-		logrus.Debugf(common.Capitalize(msg))
+		logrus.Debugf(utils.Capitalize(msg))
 		return nil, userData, fmt.Errorf(msg)
 	}
 
@@ -352,16 +388,23 @@ func (s *Stack) CreateHost(request resources.HostRequest) (host *resources.Host,
 	var desistError error
 
 	// Retry creation until success, for 10 minutes
-	err = retry.WhileUnsuccessfulDelay5Seconds(
+	retryErr := retry.WhileUnsuccessfulDelay5Seconds(
 		func() error {
-
-			server, err := buildGcpMachine(s.ComputeService, s.GcpConfig.ProjectId, request.ResourceName, rim.URL, s.GcpConfig.Zone, "safescale", defaultNetwork.Name, string(userDataPhase1), isGateway, template)
+			server, err := buildGcpMachine(s.ComputeService, s.GcpConfig.ProjectID, request.ResourceName, rim.URL, s.GcpConfig.Zone, s.GcpConfig.NetworkName, defaultNetwork.Name, string(userDataPhase1), isGateway, template)
 			if err != nil {
 				if server != nil {
+					// try deleting server
 					killErr := s.DeleteHost(server.ID)
 					if killErr != nil {
-						return errors.Wrap(err, killErr.Error())
+						switch killErr.(type) {
+						case scerr.ErrTimeout:
+							logrus.Error("Timeout cleaning up gcp instance")
+						default:
+							logrus.Errorf("Something else happened to gcp instance: %+v", killErr)
+						}
+						err = scerr.AddConsequence(err, killErr)
 					}
+					return err
 				}
 
 				if gerr, ok := err.(*googleapi.Error); ok {
@@ -384,70 +427,86 @@ func (s *Stack) CreateHost(request resources.HostRequest) (host *resources.Host,
 			host.Name = server.Name
 
 			// Wait that Host is ready, not just that the build is started
-			_, err = s.WaitHostReady(host, common.GetLongOperationTimeout())
+			_, err = s.WaitHostReady(host, temporal.GetLongOperationTimeout())
 			if err != nil {
 				killErr := s.DeleteHost(host.ID)
 				if killErr != nil {
-					return errors.Wrap(err, killErr.Error())
+					switch killErr.(type) {
+					case scerr.ErrTimeout:
+						logrus.Error("Timeout cleaning up gcp instance")
+					default:
+						logrus.Errorf("Something else happened to gcp instance: %+v", killErr)
+					}
+					err = scerr.AddConsequence(err, killErr)
 				}
 				return err
 			}
 			return nil
 		},
-		common.GetLongOperationTimeout(),
+		temporal.GetLongOperationTimeout(),
 	)
-	if err != nil {
-		return nil, userData, errors.Wrap(err, fmt.Sprintf("Error creating host: timeout"))
+	if retryErr != nil {
+		return nil, userData, retryErr
 	}
 	if desistError != nil {
-		return nil, userData, resources.ResourceAccessDeniedError(request.ResourceName, fmt.Sprintf("Error creating host: %s", desistError.Error()) )
+		return nil, userData, resources.ResourceForbiddenError(request.ResourceName, fmt.Sprintf("error creating host: %s", desistError.Error()))
 	}
 
 	logrus.Debugf("host resource created.")
 
+	newHost := host
 	// Starting from here, delete host if exiting with error
 	defer func() {
 		if err != nil {
-			logrus.Infof("Cleanup, deleting host '%s'", host.Name)
-			derr := s.DeleteHost(host.ID)
+			logrus.Infof("Cleanup, deleting host '%s'", newHost.Name)
+			derr := s.DeleteHost(newHost.ID)
 			if derr != nil {
-				logrus.Warnf("Error deleting host: %v", derr)
+				switch derr.(type) {
+				case scerr.ErrNotFound:
+					logrus.Errorf("Cleaning up on failure, failed to delete host '%s', resource not found: '%v'", newHost.Name, derr)
+				case scerr.ErrTimeout:
+					logrus.Errorf("Cleaning up on failure, failed to delete host '%s', timeout: '%v'", newHost.Name, derr)
+				default:
+					logrus.Errorf("Cleaning up on failure, failed to delete host '%s': '%v'", newHost.Name, derr)
+				}
+				err = scerr.AddConsequence(err, derr)
 			}
 		}
 	}()
 
 	if host == nil {
-		panic("Unexpected nil host")
+		return nil, nil, fmt.Errorf("unexpected nil host")
 	}
 
 	if !host.OK() {
-		logrus.Warnf("Missing data in host: %v", host)
+		logrus.Warnf("Missing data in host: %s", spew.Sdump(host))
 	}
 
 	return host, userData, nil
 }
 
 // WaitHostReady waits an host achieve ready state
-// hostParam can be an ID of host, or an instance of *resources.Host; any other type will panic
-func (s *Stack) WaitHostReady(hostParam interface{}, timeout time.Duration) (*resources.Host, error) {
+// hostParam can be an ID of host, or an instance of *resources.Host; any other type will return an utils.ErrInvalidParameter.
+func (s *Stack) WaitHostReady(hostParam interface{}, timeout time.Duration) (res *resources.Host, err error) {
 	if s == nil {
-		panic("Calling s.WaitHostReady with s==nil!")
+		return nil, scerr.InvalidInstanceError()
 	}
 
-	var (
-		host *resources.Host
-	)
-	switch hostParam.(type) {
+	var host *resources.Host
+	switch hostParam := hostParam.(type) {
 	case string:
 		host = resources.NewHost()
-		host.ID = hostParam.(string)
+		host.ID = hostParam
 	case *resources.Host:
-		host = hostParam.(*resources.Host)
-	default:
-		panic("hostParam must be a string or a *resources.Host!")
+		host = hostParam
 	}
-	logrus.Debugf(">>> stacks.gcp::WaitHostReady(%s)", host.ID)
-	defer logrus.Debugf("<<< stacks.gcp::WaitHostReady(%s)", host.ID)
+	if host == nil {
+		return nil, scerr.InvalidParameterError("hostParam", "must be a not-empty string or a *resources.Host")
+	}
+
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("(%s)", host.ID), true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
 	retryErr := retry.WhileUnsuccessful(
 		func() error {
@@ -462,12 +521,12 @@ func (s *Stack) WaitHostReady(hostParam interface{}, timeout time.Duration) (*re
 			}
 			return nil
 		},
-		common.GetDefaultDelay(),
+		temporal.GetDefaultDelay(),
 		timeout,
 	)
 	if retryErr != nil {
 		if _, ok := retryErr.(retry.ErrTimeout); ok {
-			return host, fmt.Errorf("timeout waiting to get host '%s' information after %v", host.Name, timeout)
+			return host, resources.TimeoutError(fmt.Sprintf("timeout waiting to get host '%s' information after %v", host.Name, timeout), timeout)
 		}
 		return host, retryErr
 	}
@@ -488,10 +547,10 @@ func publicAccess(isPublic bool) []*compute.AccessConfig {
 }
 
 // buildGcpMachine ...
-func buildGcpMachine(service *compute.Service, projectID string, instanceName string, imageId string, zone string, network string, subnetwork string, userdata string, isPublic bool, template *resources.HostTemplate) (*resources.Host, error) {
+func buildGcpMachine(service *compute.Service, projectID string, instanceName string, imageID string, zone string, network string, subnetwork string, userdata string, isPublic bool, template *resources.HostTemplate) (*resources.Host, error) {
 	prefix := "https://www.googleapis.com/compute/v1/projects/" + projectID
 
-	imageURL := imageId
+	imageURL := imageID
 
 	tag := "nat"
 	if !isPublic {
@@ -552,12 +611,12 @@ func buildGcpMachine(service *compute.Service, projectID string, instanceName st
 	etag := op.Header.Get("Etag")
 	oco := OpContext{
 		Operation:    op,
-		ProjectId:    projectID,
+		ProjectID:    projectID,
 		Service:      service,
 		DesiredState: "DONE",
 	}
 
-	err = waitUntilOperationIsSuccessfulOrTimeout(oco, common.GetMinDelay(), common.GetHostTimeout())
+	err = waitUntilOperationIsSuccessfulOrTimeout(oco, temporal.GetMinDelay(), temporal.GetHostTimeout())
 	if err != nil {
 		return nil, err
 	}
@@ -582,18 +641,20 @@ func buildGcpMachine(service *compute.Service, projectID string, instanceName st
 
 // InspectHost returns the host identified by ref (name or id) or by a *resources.Host containing an id
 func (s *Stack) InspectHost(hostParam interface{}) (host *resources.Host, err error) {
-	switch hostParam.(type) {
+	if s == nil {
+		return nil, scerr.InvalidInstanceError()
+	}
+
+	switch hostParam := hostParam.(type) {
 	case string:
 		host = resources.NewHost()
-		host.ID = hostParam.(string)
+		host.ID = hostParam
 	case *resources.Host:
-		host = hostParam.(*resources.Host)
-	default:
-		panic("stacks.gcp::InspectHost(): parameter 'hostParam' must be a string or a *resources.Host!")
+		host = hostParam
 	}
 
 	if host == nil {
-		panic("stacks.gcp::InspectHost(): 'host' not initialized !")
+		return nil, scerr.InvalidParameterError("hostParam", "must be a string or a *resources.Host")
 	}
 
 	hostRef := host.Name
@@ -601,50 +662,53 @@ func (s *Stack) InspectHost(hostParam interface{}) (host *resources.Host, err er
 		hostRef = host.ID
 	}
 
-	if common.IsEmpty(host) {
+	if utils.IsEmpty(host) {
 		return nil, resources.ResourceNotFoundError("host", hostRef)
 	}
 
-	gcpHost, err := s.ComputeService.Instances.Get(s.GcpConfig.ProjectId, s.GcpConfig.Zone, hostRef).Do()
+	gcpHost, err := s.ComputeService.Instances.Get(s.GcpConfig.ProjectID, s.GcpConfig.Zone, hostRef).Do()
 	if err != nil {
 		return nil, err
 	}
 
-	host.LastState = stateConvert(gcpHost.Status)
-	var subnets []IpInSubnet
+	host.LastState, err = stateConvert(gcpHost.Status)
+	if err != nil {
+		return nil, err
+	}
+	var subnets []IPInSubnet
 
 	for _, nit := range gcpHost.NetworkInterfaces {
-		snet := genUrl(nit.Subnetwork)
-		if !common.IsEmpty(snet) {
-			pubIp := ""
+		snet := genURL(nit.Subnetwork)
+		if !utils.IsEmpty(snet) {
+			pubIP := ""
 			for _, aco := range nit.AccessConfigs {
 				if aco != nil {
 					if aco.NatIP != "" {
-						pubIp = aco.NatIP
+						pubIP = aco.NatIP
 					}
 				}
 			}
 
-			subnets = append(subnets, IpInSubnet{
+			subnets = append(subnets, IPInSubnet{
 				Subnet:   snet,
 				IP:       nit.NetworkIP,
-				PublicIP: pubIp,
+				PublicIP: pubIP,
 			})
 		}
 	}
 
-	var resouceNetworks []IpInSubnet
+	var resouceNetworks []IPInSubnet
 	for _, sn := range subnets {
-		region, err := GetRegionFromSelfLink(sn.Subnet)
+		region, err := getRegionFromSelfLink(sn.Subnet)
 		if err != nil {
 			continue
 		}
-		psg, err := s.ComputeService.Subnetworks.Get(s.GcpConfig.ProjectId, region, GetResourceNameFromSelfLink(sn.Subnet)).Do()
+		psg, err := s.ComputeService.Subnetworks.Get(s.GcpConfig.ProjectID, region, getResourceNameFromSelfLink(sn.Subnet)).Do()
 		if err != nil {
 			continue
 		}
 
-		resouceNetworks = append(resouceNetworks, IpInSubnet{
+		resouceNetworks = append(resouceNetworks, IPInSubnet{
 			Subnet:   sn.Subnet,
 			Name:     psg.Name,
 			ID:       strconv.FormatUint(psg.Id, 10),
@@ -679,7 +743,7 @@ func (s *Stack) InspectHost(hostParam interface{}) (host *resources.Host, err er
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("Failed to update HostProperty.NetworkV1 : %s", err.Error())
+		return nil, fmt.Errorf("failed to update HostProperty.NetworkV1 : %s", err.Error())
 	}
 
 	allocated := fromMachineTypeToAllocatedSize(gcpHost.MachineType)
@@ -692,11 +756,11 @@ func (s *Stack) InspectHost(hostParam interface{}) (host *resources.Host, err er
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("Failed to update HostProperty.SizingV1 : %s", err.Error())
+		return nil, fmt.Errorf("failed to update HostProperty.SizingV1 : %s", err.Error())
 	}
 
 	if !host.OK() {
-		logrus.Debugf("[TRACE] Unexpected host status: %s", spew.Sdump(host))
+		logrus.Warnf("[TRACE] Unexpected host status: %s", spew.Sdump(host))
 	}
 
 	return host, nil
@@ -710,35 +774,38 @@ func fromMachineTypeToAllocatedSize(machineType string) propsv1.HostSize {
 	return hz
 }
 
-func stateConvert(gcpHostStatus string) HostState.Enum {
+func stateConvert(gcpHostStatus string) (HostState.Enum, error) {
 	switch gcpHostStatus {
 	case "PROVISIONING":
-		return HostState.STARTING
+		return HostState.STARTING, nil
 	case "REPAIRING":
-		return HostState.ERROR
+		return HostState.ERROR, nil
 	case "RUNNING":
-		return HostState.STARTED
+		return HostState.STARTED, nil
 	case "STAGING":
-		return HostState.STARTING
+		return HostState.STARTING, nil
 	case "STOPPED":
-		return HostState.STOPPED
+		return HostState.STOPPED, nil
 	case "STOPPING":
-		return HostState.STOPPING
+		return HostState.STOPPING, nil
 	case "SUSPENDED":
-		return HostState.STOPPED
+		return HostState.STOPPED, nil
 	case "SUSPENDING":
-		return HostState.STOPPING
+		return HostState.STOPPING, nil
 	case "TERMINATED":
-		return HostState.STOPPED
+		return HostState.STOPPED, nil
 	default:
-		panic(fmt.Sprintf("Unexpected host status: [%s]", gcpHostStatus))
+		return -1, fmt.Errorf("Unexpected host status: [%s]", gcpHostStatus)
 	}
 }
 
 // GetHostByName returns the host identified by ref (name or id)
 func (s *Stack) GetHostByName(name string) (*resources.Host, error) {
+	if s == nil {
+		return nil, scerr.InvalidInstanceError()
+	}
 	if name == "" {
-		panic("name is empty!")
+		return nil, scerr.InvalidParameterError("name", "cannot be empty string")
 	}
 
 	hosts, err := s.ListHosts()
@@ -757,8 +824,15 @@ func (s *Stack) GetHostByName(name string) (*resources.Host, error) {
 
 // DeleteHost deletes the host identified by id
 func (s *Stack) DeleteHost(id string) (err error) {
+	if s == nil {
+		return scerr.InvalidInstanceError()
+	}
+	if id == "" {
+		return scerr.InvalidParameterError("id", "cannot be empty string")
+	}
+
 	service := s.ComputeService
-	projectID := s.GcpConfig.ProjectId
+	projectID := s.GcpConfig.ProjectID
 	zone := s.GcpConfig.Zone
 	instanceName := id
 
@@ -774,30 +848,48 @@ func (s *Stack) DeleteHost(id string) (err error) {
 
 	oco := OpContext{
 		Operation:    op,
-		ProjectId:    projectID,
+		ProjectID:    projectID,
 		Service:      service,
 		DesiredState: "DONE",
 	}
 
-	err = waitUntilOperationIsSuccessfulOrTimeout(oco, common.GetMinDelay(), common.GetHostTimeout())
+	err = waitUntilOperationIsSuccessfulOrTimeout(oco, temporal.GetMinDelay(), temporal.GetHostCleanupTimeout())
+
+	waitErr := retry.WhileUnsuccessfulDelay5Seconds(func() error {
+		_, recErr := service.Instances.Get(projectID, zone, instanceName).Do()
+		if gerr, ok := recErr.(*googleapi.Error); ok {
+			if gerr.Code == 404 {
+				return nil
+			}
+		}
+		return fmt.Errorf("error waiting for instance [%s] to disappear: [%v]", instanceName, recErr)
+	}, temporal.GetContextTimeout())
+
+	if waitErr != nil {
+		logrus.Error(scerr.Cause(waitErr))
+	}
 
 	return err
 }
 
 // ResizeHost change the template used by an host
 func (s *Stack) ResizeHost(id string, request resources.SizingRequirements) (*resources.Host, error) {
-	return nil, fmt.Errorf("not implemented yet")
+	return nil, scerr.NotImplementedError("ResizeHost() not implemented yet")
 }
 
 // ListHosts lists available hosts
 func (s *Stack) ListHosts() ([]*resources.Host, error) {
+	if s == nil {
+		return nil, scerr.InvalidInstanceError()
+	}
+
 	compuService := s.ComputeService
 
 	var hostList []*resources.Host
 
 	token := ""
 	for paginate := true; paginate; {
-		resp, err := compuService.Instances.List(s.GcpConfig.ProjectId, s.GcpConfig.Zone).PageToken(token).Do()
+		resp, err := compuService.Instances.List(s.GcpConfig.ProjectID, s.GcpConfig.Zone).PageToken(token).Do()
 		if err != nil {
 			return hostList, fmt.Errorf("cannot list hosts: %v", err)
 		}
@@ -805,7 +897,7 @@ func (s *Stack) ListHosts() ([]*resources.Host, error) {
 			nhost := resources.NewHost()
 			nhost.ID = strconv.FormatUint(instance.Id, 10)
 			nhost.Name = instance.Name
-			nhost.LastState = stateConvert(instance.Status)
+			nhost.LastState, _ = stateConvert(instance.Status)
 
 			// FIXME Populate host, what's missing ?
 			hostList = append(hostList, nhost)
@@ -819,83 +911,108 @@ func (s *Stack) ListHosts() ([]*resources.Host, error) {
 
 // StopHost stops the host identified by id
 func (s *Stack) StopHost(id string) error {
+	if s == nil {
+		return scerr.InvalidInstanceError()
+	}
+	if id == "" {
+		return scerr.InvalidParameterError("id", "cannot be empty string")
+	}
+
 	service := s.ComputeService
 
-	op, err := service.Instances.Stop(s.GcpConfig.ProjectId, s.GcpConfig.Zone, id).Do()
+	op, err := service.Instances.Stop(s.GcpConfig.ProjectID, s.GcpConfig.Zone, id).Do()
 	if err != nil {
 		return err
 	}
 
 	oco := OpContext{
 		Operation:    op,
-		ProjectId:    s.GcpConfig.ProjectId,
+		ProjectID:    s.GcpConfig.ProjectID,
 		Service:      service,
 		DesiredState: "DONE",
 	}
 
-	err = waitUntilOperationIsSuccessfulOrTimeout(oco, common.GetMinDelay(), common.GetHostTimeout())
+	err = waitUntilOperationIsSuccessfulOrTimeout(oco, temporal.GetMinDelay(), temporal.GetHostTimeout())
 	return err
 }
 
 // StartHost starts the host identified by id
 func (s *Stack) StartHost(id string) error {
+	if s == nil {
+		return scerr.InvalidInstanceError()
+	}
+	if id == "" {
+		return scerr.InvalidParameterError("id", "cannot be empty string")
+	}
+
 	service := s.ComputeService
 
-	op, err := service.Instances.Start(s.GcpConfig.ProjectId, s.GcpConfig.Zone, id).Do()
+	op, err := service.Instances.Start(s.GcpConfig.ProjectID, s.GcpConfig.Zone, id).Do()
 	if err != nil {
 		return err
 	}
 
 	oco := OpContext{
 		Operation:    op,
-		ProjectId:    s.GcpConfig.ProjectId,
+		ProjectID:    s.GcpConfig.ProjectID,
 		Service:      service,
 		DesiredState: "DONE",
 	}
 
-	err = waitUntilOperationIsSuccessfulOrTimeout(oco, common.GetMinDelay(), common.GetHostTimeout())
+	err = waitUntilOperationIsSuccessfulOrTimeout(oco, temporal.GetMinDelay(), temporal.GetHostTimeout())
 	return err
 }
 
 // RebootHost reboot the host identified by id
 func (s *Stack) RebootHost(id string) error {
+	if s == nil {
+		return scerr.InvalidInstanceError()
+	}
+	if id == "" {
+		return scerr.InvalidParameterError("id", "cannot be empty string")
+	}
+
 	service := s.ComputeService
 
-	op, err := service.Instances.Stop(s.GcpConfig.ProjectId, s.GcpConfig.Zone, id).Do()
+	op, err := service.Instances.Stop(s.GcpConfig.ProjectID, s.GcpConfig.Zone, id).Do()
 	if err != nil {
 		return err
 	}
 
 	oco := OpContext{
 		Operation:    op,
-		ProjectId:    s.GcpConfig.ProjectId,
+		ProjectID:    s.GcpConfig.ProjectID,
 		Service:      service,
 		DesiredState: "DONE",
 	}
 
-	err = waitUntilOperationIsSuccessfulOrTimeout(oco, common.GetMinDelay(), common.GetHostTimeout())
+	err = waitUntilOperationIsSuccessfulOrTimeout(oco, temporal.GetMinDelay(), temporal.GetHostTimeout())
 	if err != nil {
 		return err
 	}
 
-	op, err = service.Instances.Start(s.GcpConfig.ProjectId, s.GcpConfig.Zone, id).Do()
+	op, err = service.Instances.Start(s.GcpConfig.ProjectID, s.GcpConfig.Zone, id).Do()
 	if err != nil {
 		return err
 	}
 
 	oco = OpContext{
 		Operation:    op,
-		ProjectId:    s.GcpConfig.ProjectId,
+		ProjectID:    s.GcpConfig.ProjectID,
 		Service:      service,
 		DesiredState: "DONE",
 	}
 
-	err = waitUntilOperationIsSuccessfulOrTimeout(oco, common.GetMinDelay(), common.GetHostTimeout())
+	err = waitUntilOperationIsSuccessfulOrTimeout(oco, temporal.GetMinDelay(), temporal.GetHostTimeout())
 	return err
 }
 
 // GetHostState returns the host identified by id
 func (s *Stack) GetHostState(hostParam interface{}) (HostState.Enum, error) {
+	if s == nil {
+		return HostState.ERROR, scerr.InvalidInstanceError()
+	}
+
 	host, err := s.InspectHost(hostParam)
 	if err != nil {
 		return HostState.ERROR, err
@@ -908,26 +1025,39 @@ func (s *Stack) GetHostState(hostParam interface{}) (HostState.Enum, error) {
 
 // ListAvailabilityZones lists the usable AvailabilityZones
 func (s *Stack) ListAvailabilityZones() (map[string]bool, error) {
-	regions := make(map[string]bool)
+	zones := make(map[string]bool)
+	if s == nil {
+		return nil, scerr.InvalidInstanceError()
+	}
 
-	compuService := s.ComputeService
-
-	resp, err := compuService.Regions.List(s.GcpConfig.ProjectId).Do()
+	resp, err := s.ComputeService.Zones.List(s.GcpConfig.ProjectID).Do()
 	if err != nil {
-		return regions, err
+		return zones, err
 	}
 	for _, region := range resp.Items {
-		regions[region.Name] = region.Status == "UP"
+		zones[region.Name] = region.Status == "UP"
 	}
 
-	return regions, nil
+	return zones, nil
 }
 
 // ListRegions ...
 func (s *Stack) ListRegions() ([]string, error) {
-	// FIXME Implement this
+	if s == nil {
+		return nil, scerr.InvalidInstanceError()
+	}
 
 	var regions []string
+
+	compuService := s.ComputeService
+
+	resp, err := compuService.Regions.List(s.GcpConfig.ProjectID).Do()
+	if err != nil {
+		return regions, err
+	}
+	for _, region := range resp.Items {
+		regions = append(regions, region.Name)
+	}
 
 	return regions, nil
 }

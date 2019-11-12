@@ -20,20 +20,27 @@ import (
 	"fmt"
 
 	"github.com/CS-SI/SafeScale/lib/server/install/enums/Method"
+	"github.com/sirupsen/logrus"
 )
 
 func init() {
 
 	allEmbedded = []*Feature{
 		dockerFeature(),
-		dockerComposeFeature(),
+		// dockerComposeFeature(),
+		ntpServerFeature(),
+		ntpClientFeature(),
+		ansibleFeature(),
+		postgresql4platformFeature(),
 		nVidiaDockerFeature(),
 		mpichOsPkgFeature(),
 		mpichBuildFeature(),
 		ohpcSlurmMasterFeature(),
 		ohpcSlurmNodeFeature(),
 		remoteDesktopFeature(),
-		reverseProxyFeature(),
+		postgres4gatewayFeature(),
+		edgeproxy4networkFeature(),
+		keycloak4platformFeature(),
 		kubernetesFeature(),
 		proxycacheServerFeature(),
 		proxycacheClientFeature(),
@@ -44,9 +51,11 @@ func init() {
 		filebeatFeature(),
 		kibanaFeature(),
 		helmFeature(),
-		sparkFeature(),
-		keycloakFeature(),
+		sparkmaster4platformFeature(),
 		elassandraFeature(),
+		consul4platformFeature(),
+		monitoring4platformFeature(),
+		geoserverFeature(),
 	}
 
 	for _, item := range allEmbedded {
@@ -56,8 +65,9 @@ func init() {
 		for k := range installers {
 			method, err := Method.Parse(k)
 			if err != nil {
-				panic(fmt.Sprintf("syntax error in feature '%s' specification file (%s)! install method '%s' unknown!",
+				logrus.Errorf(fmt.Sprintf("syntax error in feature '%s' specification file (%s)! install method '%s' unknown!",
 					item.DisplayName(), item.DisplayFilename(), k))
+				continue
 			}
 			if _, found := availableEmbeddedMap[method]; !found {
 				availableEmbeddedMap[method] = map[string]*Feature{

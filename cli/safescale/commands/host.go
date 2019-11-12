@@ -33,7 +33,10 @@ import (
 	clitools "github.com/CS-SI/SafeScale/lib/utils/cli"
 	"github.com/CS-SI/SafeScale/lib/utils/cli/enums/ExitCode"
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
+	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 )
+
+var hostCmdName = "host"
 
 // HostCmd command
 var HostCmd = cli.Command{
@@ -46,7 +49,7 @@ var HostCmd = cli.Command{
 		hostDelete,
 		hostInspect,
 		hostStatus,
-		hostSsh,
+		hostSSH,
 		hostReboot,
 		hostStart,
 		hostStop,
@@ -62,12 +65,13 @@ var hostStart = cli.Command{
 	Usage:     "start Host",
 	ArgsUsage: "<Host_name|Host_ID>",
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", hostCmdName, c.Command.Name, c.Args())
 		if c.NArg() != 1 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Host_name>."))
 		}
 		hostRef := c.Args().First()
-		err := client.New().Host.Start(hostRef, client.DefaultExecutionTimeout)
+		err := client.New().Host.Start(hostRef, temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "start of host", false).Error())))
 		}
@@ -80,12 +84,13 @@ var hostStop = cli.Command{
 	Usage:     "stop Host",
 	ArgsUsage: "<Host_name|Host_ID>",
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", hostCmdName, c.Command.Name, c.Args())
 		if c.NArg() != 1 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Host_name>."))
 		}
 		hostRef := c.Args().First()
-		err := client.New().Host.Stop(hostRef, client.DefaultExecutionTimeout)
+		err := client.New().Host.Stop(hostRef, temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "stop of host", false).Error())))
 		}
@@ -98,13 +103,14 @@ var hostReboot = cli.Command{
 	Usage:     "reboot Host",
 	ArgsUsage: "<Host_name|Host_ID>",
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", hostCmdName, c.Command.Name, c.Args())
 		if c.NArg() != 1 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Host_name>."))
 		}
 
 		hostRef := c.Args().First()
-		err := client.New().Host.Reboot(hostRef, client.DefaultExecutionTimeout)
+		err := client.New().Host.Reboot(hostRef, temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "reboot of host", false).Error())))
 		}
@@ -122,7 +128,8 @@ var hostList = cli.Command{
 			Usage: "List all hosts on tenant (not only those created by SafeScale)",
 		}},
 	Action: func(c *cli.Context) error {
-		hosts, err := client.New().Host.List(c.Bool("all"), client.DefaultExecutionTimeout)
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", hostCmdName, c.Command.Name, c.Args())
+		hosts, err := client.New().Host.List(c.Bool("all"), temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "list of hosts", false).Error())))
 		}
@@ -147,11 +154,12 @@ var hostInspect = cli.Command{
 	Usage:     "inspect Host",
 	ArgsUsage: "<Host_name|Host_ID>",
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", hostCmdName, c.Command.Name, c.Args())
 		if c.NArg() != 1 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Host_name>."))
 		}
-		resp, err := client.New().Host.Inspect(c.Args().First(), client.DefaultExecutionTimeout)
+		resp, err := client.New().Host.Inspect(c.Args().First(), temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "inspection of host", false).Error())))
 		}
@@ -164,11 +172,12 @@ var hostStatus = cli.Command{
 	Usage:     "status Host",
 	ArgsUsage: "<Host_name|Host_ID>",
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", hostCmdName, c.Command.Name, c.Args())
 		if c.NArg() != 1 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Host_name>."))
 		}
-		resp, err := client.New().Host.Status(c.Args().First(), client.DefaultExecutionTimeout)
+		resp, err := client.New().Host.Status(c.Args().First(), temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "status of host", false).Error())))
 		}
@@ -247,13 +256,13 @@ var hostCreate = cli.Command{
 		},
 	},
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", hostCmdName, c.Command.Name, c.Args())
 		if c.NArg() != 1 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Host_name>."))
 		}
 		askedGpus := int32(c.Int("gpu"))
 		if askedGpus <= -1 {
-			askedGpus = -1
 			logrus.Debug("No GPU parameters used")
 		} else {
 			if askedGpus == 0 {
@@ -267,7 +276,7 @@ var hostCreate = cli.Command{
 		if err != nil {
 			return err
 		}
-		resp, err := client.New().Host.Create(*def, client.DefaultExecutionTimeout)
+		resp, err := client.New().Host.Create(*def, temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "creation of host", true).Error())))
 		}
@@ -308,6 +317,7 @@ var hostResize = cli.Command{
 		},
 	},
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", hostCmdName, c.Command.Name, c.Args())
 		if c.NArg() != 1 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Host_name>."))
@@ -326,7 +336,7 @@ var hostResize = cli.Command{
 			CpuFreq:  float32(c.Float64("cpu-freq")),
 			Force:    c.Bool("force"),
 		}
-		resp, err := client.New().Host.Resize(def, client.DefaultExecutionTimeout)
+		resp, err := client.New().Host.Resize(def, temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "creation of host", true).Error())))
 		}
@@ -340,6 +350,7 @@ var hostDelete = cli.Command{
 	Usage:     "Delete host",
 	ArgsUsage: "<Host_name|Host_ID> [<Host_name|Host_ID>...]",
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", hostCmdName, c.Command.Name, c.Args())
 		if c.NArg() < 1 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Host_name>."))
@@ -348,7 +359,7 @@ var hostDelete = cli.Command{
 		hostList = append(hostList, c.Args().First())
 		hostList = append(hostList, c.Args().Tail()...)
 
-		err := client.New().Host.Delete(hostList, client.DefaultExecutionTimeout)
+		err := client.New().Host.Delete(hostList, temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "deletion of host", false).Error())))
 		}
@@ -356,11 +367,12 @@ var hostDelete = cli.Command{
 	},
 }
 
-var hostSsh = cli.Command{
+var hostSSH = cli.Command{
 	Name:      "ssh",
 	Usage:     "Get ssh config to connect to host",
 	ArgsUsage: "<Host_name|Host_ID>",
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", hostCmdName, c.Command.Name, c.Args())
 		if c.NArg() < 1 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Host_name>."))
@@ -392,6 +404,7 @@ var hostAddFeatureCommand = cli.Command{
 	},
 
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", hostCmdName, c.Command.Name, c.Args())
 		err := extractHostArgument(c, 0)
 		if err != nil {
 			return clitools.FailureResponse(err)
@@ -407,7 +420,7 @@ var hostAddFeatureCommand = cli.Command{
 			return clitools.FailureResponse(clitools.ExitOnErrorWithMessage(ExitCode.Run, err.Error()))
 		}
 		if feature == nil {
-			msg := fmt.Sprintf("Failed to find a feature named '%s'.", featureName)
+			msg := fmt.Sprintf("failed to find a feature named '%s'.", featureName)
 			return clitools.FailureResponse(clitools.ExitOnErrorWithMessage(ExitCode.NotFound, msg))
 		}
 		values := install.Variables{}
@@ -423,20 +436,23 @@ var hostAddFeatureCommand = cli.Command{
 		settings.SkipProxy = c.Bool("skip-proxy")
 
 		// Wait for SSH service on remote host first
-		err = client.New().Ssh.WaitReady(hostInstance.Id, client.DefaultConnectionTimeout)
+		err = client.New().SSH.WaitReady(hostInstance.Id, temporal.GetConnectionTimeout())
 		if err != nil {
-			msg := fmt.Sprintf("Failed to reach '%s': %s", hostName, client.DecorateError(err, "waiting ssh on host", false))
+			msg := fmt.Sprintf("failed to reach '%s': %s", hostName, client.DecorateError(err, "waiting ssh on host", false))
 			return clitools.FailureResponse(clitools.ExitOnRPC(msg))
 		}
 
-		target := install.NewHostTarget(hostInstance)
+		target, err := install.NewHostTarget(hostInstance)
+		if err != nil {
+			return clitools.FailureResponse(err)
+		}
 		results, err := feature.Add(target, values, settings)
 		if err != nil {
-			msg := fmt.Sprintf("Error adding feature '%s' on host '%s': %s", featureName, hostName, err.Error())
+			msg := fmt.Sprintf("error adding feature '%s' on host '%s': %s", featureName, hostName, err.Error())
 			return clitools.FailureResponse(clitools.ExitOnRPC(msg))
 		}
 		if !results.Successful() {
-			msg := fmt.Sprintf("Failed to add feature '%s' on host '%s'", featureName, hostName)
+			msg := fmt.Sprintf("failed to add feature '%s' on host '%s'", featureName, hostName)
 			if Debug || Verbose {
 				msg += fmt.Sprintf(":\n%s", results.AllErrorMessages())
 			}
@@ -446,7 +462,7 @@ var hostAddFeatureCommand = cli.Command{
 	},
 }
 
-// hostCheckFeaturesCommand handles 'safescale host <host name or id> list-features'
+// hostListFeaturesCommand handles 'safescale host list-features'
 var hostListFeaturesCommand = cli.Command{
 	Name:      "list-features",
 	Aliases:   []string{"list-available-features"},
@@ -461,6 +477,7 @@ var hostListFeaturesCommand = cli.Command{
 	},
 
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", hostCmdName, c.Command.Name, c.Args())
 		features, err := install.ListFeatures("host")
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnErrorWithMessage(ExitCode.Run, err.Error()))
@@ -484,6 +501,7 @@ var hostCheckFeatureCommand = cli.Command{
 	},
 
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", hostCmdName, c.Command.Name, c.Args())
 		err := extractHostArgument(c, 0)
 		if err != nil {
 			return clitools.FailureResponse(err)
@@ -499,7 +517,7 @@ var hostCheckFeatureCommand = cli.Command{
 			return clitools.FailureResponse(clitools.ExitOnErrorWithMessage(ExitCode.Run, err.Error()))
 		}
 		if feature == nil {
-			msg := fmt.Sprintf("Failed to find a feature named '%s'.", featureName)
+			msg := fmt.Sprintf("failed to find a feature named '%s'.", featureName)
 			return clitools.FailureResponse(clitools.ExitOnErrorWithMessage(ExitCode.NotFound, msg))
 		}
 
@@ -513,16 +531,19 @@ var hostCheckFeatureCommand = cli.Command{
 		}
 
 		// Wait for SSH service on remote host first
-		err = client.New().Ssh.WaitReady(hostInstance.Id, client.DefaultConnectionTimeout)
+		err = client.New().SSH.WaitReady(hostInstance.Id, temporal.GetConnectionTimeout())
 		if err != nil {
-			msg := fmt.Sprintf("Failed to reach '%s': %s", hostName, client.DecorateError(err, "waiting ssh on host", false))
+			msg := fmt.Sprintf("failed to reach '%s': %s", hostName, client.DecorateError(err, "waiting ssh on host", false))
 			return clitools.FailureResponse(clitools.ExitOnRPC(msg))
 		}
 
-		target := install.NewHostTarget(hostInstance)
+		target, err := install.NewHostTarget(hostInstance)
+		if err != nil {
+			return clitools.FailureResponse(err)
+		}
 		results, err := feature.Check(target, values, install.Settings{})
 		if err != nil {
-			msg := fmt.Sprintf("Error checking if feature '%s' is installed on '%s': %s\n", featureName, hostName, err.Error())
+			msg := fmt.Sprintf("error checking if feature '%s' is installed on '%s': %s\n", featureName, hostName, err.Error())
 			return clitools.FailureResponse(clitools.ExitOnRPC(msg))
 		}
 		if !results.Successful() {
@@ -551,6 +572,7 @@ var hostDeleteFeatureCommand = cli.Command{
 	},
 
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", hostCmdName, c.Command.Name, c.Args())
 		err := extractHostArgument(c, 0)
 		if err != nil {
 			return clitools.FailureResponse(err)
@@ -566,7 +588,7 @@ var hostDeleteFeatureCommand = cli.Command{
 			return clitools.FailureResponse(clitools.ExitOnErrorWithMessage(ExitCode.Run, err.Error()))
 		}
 		if feature == nil {
-			msg := fmt.Sprintf("Failed to find a feature named '%s'.", featureName)
+			msg := fmt.Sprintf("failed to find a feature named '%s'.", featureName)
 			return clitools.FailureResponse(clitools.ExitOnErrorWithMessage(ExitCode.NotFound, msg))
 		}
 
@@ -580,20 +602,23 @@ var hostDeleteFeatureCommand = cli.Command{
 		}
 
 		// Wait for SSH service on remote host first
-		err = client.New().Ssh.WaitReady(hostInstance.Id, client.DefaultConnectionTimeout)
+		err = client.New().SSH.WaitReady(hostInstance.Id, temporal.GetConnectionTimeout())
 		if err != nil {
-			msg := fmt.Sprintf("Failed to reach '%s': %s", hostName, client.DecorateError(err, "waiting ssh on host", false))
+			msg := fmt.Sprintf("failed to reach '%s': %s", hostName, client.DecorateError(err, "waiting ssh on host", false))
 			return clitools.FailureResponse(clitools.ExitOnRPC(msg))
 		}
 
-		target := install.NewHostTarget(hostInstance)
+		target, err := install.NewHostTarget(hostInstance)
+		if err != nil {
+			return clitools.FailureResponse(err)
+		}
 		results, err := feature.Remove(target, values, install.Settings{})
 		if err != nil {
-			msg := fmt.Sprintf("Error uninstalling feature '%s' on '%s': %s\n", featureName, hostName, err.Error())
+			msg := fmt.Sprintf("error uninstalling feature '%s' on '%s': %s\n", featureName, hostName, err.Error())
 			return clitools.FailureResponse(clitools.ExitOnRPC(msg))
 		}
 		if !results.Successful() {
-			msg := fmt.Sprintf("Failed to delete feature '%s' from host '%s'", featureName, hostName)
+			msg := fmt.Sprintf("failed to delete feature '%s' from host '%s'", featureName, hostName)
 			if Verbose || Debug {
 				msg += fmt.Sprintf(":\n%s", results.AllErrorMessages())
 			}
@@ -608,7 +633,7 @@ func constructPBHostDefinitionFromCLI(c *cli.Context, key string) (*pb.HostDefin
 	var sizing string
 	if c.IsSet(key) {
 		if c.IsSet("cpu") || c.IsSet("cpufreq") || c.IsSet("gpu") || c.IsSet("ram") || c.IsSet("disk") {
-			return nil, clitools.FailureResponse(clitools.ExitOnInvalidArgument("can't use simultaneously --sizing and --cpu|--cpufreq|--gpu|--ram|--disk"))
+			return nil, clitools.FailureResponse(clitools.ExitOnInvalidArgument("cannot use simultaneously --sizing and --cpu|--cpufreq|--gpu|--ram|--disk"))
 		}
 		sizing = c.String(key)
 	} else {

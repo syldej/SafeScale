@@ -23,6 +23,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/urfave/cli"
 
 	"github.com/CS-SI/SafeScale/lib/client"
@@ -30,7 +32,10 @@ import (
 	"github.com/CS-SI/SafeScale/lib/utils"
 	clitools "github.com/CS-SI/SafeScale/lib/utils/cli"
 	"github.com/CS-SI/SafeScale/lib/utils/cli/enums/ExitCode"
+	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 )
+
+var sshCmdName = "ssh"
 
 // SSHCmd ssh command
 var SSHCmd = cli.Command{
@@ -60,24 +65,28 @@ var sshRun = cli.Command{
 			Usage: "timeout in minutes",
 		}},
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", sshCmdName, c.Command.Name, c.Args())
 		if c.NArg() != 1 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Host_name>."))
 		}
 
-		timeout := utils.GetHostTimeout()
+		var timeout time.Duration
 		if c.IsSet("timeout") {
 			timeout = time.Duration(c.Float64("timeout")) * time.Minute
+		} else {
+			timeout = temporal.GetHostTimeout()
+
 		}
-		retcode, stdout, stderr, err := client.New().Ssh.Run(c.Args().Get(0), c.String("c"), client.DefaultConnectionTimeout, timeout)
+		retcode, stdout, stderr, err := client.New().SSH.Run(c.Args().Get(0), c.String("c"), temporal.GetConnectionTimeout(), timeout)
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "ssh run", false).Error())))
 		}
 		if retcode != 0 {
-			fmt.Printf(stderr)
+			fmt.Print(stderr)
 			return cli.NewExitError(stderr, retcode)
 		}
-		fmt.Printf(stdout)
+		fmt.Print(stdout)
 		return nil
 	},
 }
@@ -101,16 +110,19 @@ var sshCopy = cli.Command{
 			Usage: "timeout in minutes",
 		}},
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", sshCmdName, c.Command.Name, c.Args())
 		if c.NArg() != 2 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("2 arguments (from and to) are required."))
 		}
 
-		timeout := utils.GetHostTimeout()
+		var timeout time.Duration
 		if c.IsSet("timeout") {
 			timeout = time.Duration(c.Float64("timeout")) * time.Minute
+		} else {
+			timeout = temporal.GetHostTimeout()
 		}
-		retcode, _, _, err := client.New().Ssh.Copy(normalizeFileName(c.Args().Get(0)), normalizeFileName(c.Args().Get(1)), client.DefaultConnectionTimeout, timeout)
+		retcode, _, _, err := client.New().SSH.Copy(normalizeFileName(c.Args().Get(0)), normalizeFileName(c.Args().Get(1)), temporal.GetConnectionTimeout(), timeout)
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "ssh copy", true).Error())))
 		}
@@ -126,11 +138,12 @@ var sshConnect = cli.Command{
 	Usage:     "Connect to the host with interactive shell",
 	ArgsUsage: "<Host_name|Host_ID>",
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", sshCmdName, c.Command.Name, c.Args())
 		if c.NArg() != 1 {
 			_ = cli.ShowSubcommandHelp(c)
 			return fmt.Errorf("missing mandatory argument <Host_name>")
 		}
-		err := client.New().Ssh.Connect(c.Args().Get(0), 0)
+		err := client.New().SSH.Connect(c.Args().Get(0), 0)
 		if err != nil {
 			return clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "ssh connect", false).Error()))
 		}
@@ -160,6 +173,7 @@ var sshTunnel = cli.Command{
 		},
 	},
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", sshCmdName, c.Command.Name, c.Args())
 		if c.NArg() != 1 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Host_name>."))
@@ -178,7 +192,7 @@ var sshTunnel = cli.Command{
 		timeout := time.Duration(c.Float64("timeout")) * time.Minute
 
 		//c.GlobalInt("port") is the grpc port aka. 50051
-		err := client.New().Ssh.CreateTunnel(c.Args().Get(0), localPort, remotePort, timeout)
+		err := client.New().SSH.CreateTunnel(c.Args().Get(0), localPort, remotePort, timeout)
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "ssh tunnel", false).Error())))
 		}
@@ -208,6 +222,7 @@ var sshClose = cli.Command{
 		},
 	},
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", sshCmdName, c.Command.Name, c.Args())
 		if c.NArg() != 1 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Host_name>."))
@@ -229,7 +244,7 @@ var sshClose = cli.Command{
 		}
 
 		timeout := time.Duration(c.Float64("timeout")) * time.Minute
-		err := client.New().Ssh.CloseTunnels(c.Args().Get(0), strLocalPort, strRemotePort, timeout)
+		err := client.New().SSH.CloseTunnels(c.Args().Get(0), strLocalPort, strRemotePort, timeout)
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "ssh close", false).Error())))
 		}

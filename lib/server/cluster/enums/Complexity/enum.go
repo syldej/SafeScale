@@ -25,7 +25,6 @@ import (
 type Enum int
 
 const (
-
 	// Small is the simplest mode of cluster
 	Small Enum = 1
 	// Normal allows the cluster to be resistant to 1 master failure
@@ -64,17 +63,7 @@ func Parse(v string) (Enum, error) {
 
 }
 
-// FromString returns a Enum corresponding to the string parameter
-// This method is intended to be used from validated input.
-func FromString(v string) (e Enum) {
-	e, err := Parse(v)
-	if err != nil {
-		panic(err.Error())
-	}
-	return
-}
-
-// String returns a string representaton of an Enum
+// String returns a string representation of an Enum
 func (e Enum) String() string {
 	if str, found := enumMap[e]; found {
 		return str

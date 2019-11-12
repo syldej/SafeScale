@@ -19,14 +19,16 @@ package listeners
 import (
 	"context"
 
-	"google.golang.org/grpc"
+	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	pb "github.com/CS-SI/SafeScale/lib"
 	"github.com/CS-SI/SafeScale/lib/server/handlers"
-	"github.com/CS-SI/SafeScale/lib/server/utils"
 	conv "github.com/CS-SI/SafeScale/lib/server/utils"
-	log "github.com/sirupsen/logrus"
+	srvutils "github.com/CS-SI/SafeScale/lib/server/utils"
+	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 )
 
 // ImageHandler ...
@@ -38,25 +40,30 @@ var ImageHandler = handlers.NewImageHandler
 type ImageListener struct{}
 
 // List available images
-func (s *ImageListener) List(ctx context.Context, in *pb.ImageListRequest) (*pb.ImageList, error) {
-	log.Infof("List images called")
+func (s *ImageListener) List(ctx context.Context, in *pb.ImageListRequest) (il *pb.ImageList, err error) {
+	if s == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, scerr.InvalidInstanceError().Error())
+	}
+
+	tracer := concurrency.NewTracer(nil, "", true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
 	ctx, cancelFunc := context.WithCancel(ctx)
-
-	if err := utils.ProcessRegister(ctx, cancelFunc, "List Images"); err == nil {
-		defer utils.ProcessDeregister(ctx)
+	if err := srvutils.JobRegister(ctx, cancelFunc, "List Images"); err == nil {
+		defer srvutils.JobDeregister(ctx)
 	}
 
 	tenant := GetCurrentTenant()
 	if tenant == nil {
-		log.Info("Can't list images: no tenant set")
-		return nil, grpc.Errorf(codes.FailedPrecondition, "can't list images: no tenant set")
+		logrus.Info("Can't list images: no tenant set")
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot list images: no tenant set")
 	}
 
 	handler := ImageHandler(currentTenant.Service)
 	images, err := handler.List(ctx, in.GetAll())
 	if err != nil {
-		return nil, grpc.Errorf(codes.Internal, err.Error())
+		return nil, status.Errorf(codes.Internal, err.Error())
 	}
 
 	// Map resources.Image to pb.Image

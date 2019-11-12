@@ -25,6 +25,7 @@ import (
 	"github.com/CS-SI/SafeScale/lib/client"
 	clitools "github.com/CS-SI/SafeScale/lib/utils/cli"
 	"github.com/CS-SI/SafeScale/lib/utils/cli/enums/ExitCode"
+	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 )
 
 var (
@@ -58,7 +59,7 @@ func extractHostArgument(c *cli.Context, hostnamePos int) error {
 	}
 
 	var err error
-	hostInstance, err = client.New().Host.Inspect(hostName, client.DefaultExecutionTimeout)
+	hostInstance, err = client.New().Host.Inspect(hostName, temporal.GetExecutionTimeout())
 	if err != nil {
 		//fmt.Printf("%s\n", err.Error())
 		return clitools.ExitOnRPC(err.Error())

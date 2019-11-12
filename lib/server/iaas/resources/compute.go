@@ -45,7 +45,7 @@ type SizingRequirements struct {
 
 // StoredCPUInfo ...
 type StoredCPUInfo struct {
-	Id           string `bow:"key"`
+	ID           string `bow:"key"`
 	TenantName   string `json:"tenant_name,omitempty"`
 	TemplateID   string `json:"template_id,omitempty"`
 	TemplateName string `json:"template_name,omitempty"`
@@ -72,7 +72,7 @@ type StoredCPUInfo struct {
 	PricePerHour   float64 `json:"price_in_dollars_hour"`
 }
 
-// Image representes an OS image
+// Image represents an OS image
 type Image struct {
 	ID   string `json:"id,omitempty"`
 	Name string `json:"name,omitempty"`
@@ -87,6 +87,8 @@ type HostRequest struct {
 	HostName string
 	// Networks lists the networks the host must be connected to
 	Networks []*Network
+	// DefaultRouteIP is the IP used as default route
+	DefaultRouteIP string
 	// DefaultGateway is the host used as default gateway
 	DefaultGateway *Host
 	// PublicIP a flag telling if the host must have a public IP
@@ -97,7 +99,7 @@ type HostRequest struct {
 	ImageID string
 	// KeyPair is the (optional) specific KeyPair to use (if not provided, a new KeyPair will be generated)
 	KeyPair *KeyPair
-	// Password contains the safescale password useable on host console only
+	// Password contains the safescale password usable on host console only
 	Password string
 	// DiskSize allows to ask for a specific size for system disk (in GB)
 	DiskSize int
@@ -145,14 +147,20 @@ func NewHost() *Host {
 	}
 }
 
-func (h *Host) OK() bool {
+// IsConsistent tells if host struct is consistent
+func (h *Host) IsConsistent() bool {
 	result := true
 	result = result && h.ID != ""
 	result = result && h.Name != ""
-	result = result && h.PrivateKey != ""
-	result = result && h.Password != ""
+	// result = result && h.PrivateKey != ""
+	// result = result && h.Password != ""
 	result = result && h.Properties != nil
 	return result
+}
+
+// OK ...
+func (h *Host) OK() bool {
+	return h.IsConsistent()
 }
 
 // GetAccessIP returns the IP to reach the host
@@ -205,7 +213,7 @@ func (h *Host) Serialize() ([]byte, error) {
 	return serialize.ToJSON(h)
 }
 
-// Deserialize reads json code and reinstanciates an Host
+// Deserialize reads json code and reinstantiates an Host
 func (h *Host) Deserialize(buf []byte) error {
 	if h.Properties == nil {
 		h.Properties = serialize.NewJSONProperties("resources.host")

@@ -69,7 +69,7 @@ func loadSpecFile(name string) (string, *viper.Viper, error) {
 	if !v.IsSet("feature.install") {
 		return "", nil, fmt.Errorf("syntax error in feature specification file '%s': missing 'install'", name)
 	}
-	if len(v.GetStringMap("feature.install")) <= 0 {
+	if len(v.GetStringMap("feature.install")) == 0 {
 		return "", nil, fmt.Errorf("syntax error in feature specification file '%s': 'install' defines no method", name)
 	}
 	return name, v, nil
@@ -90,9 +90,69 @@ func dockerFeature() *Feature {
 	}
 }
 
-// dockerComposeFeature ...
-func dockerComposeFeature() *Feature {
-	name := "docker-compose"
+// // dockerComposeFeature ...
+// func dockerComposeFeature() *Feature {
+// 	name := "docker-compose"
+// 	filename, specs, err := loadSpecFile(name)
+// 	if err != nil {
+// 		panic(err.Error())
+// 	}
+// 	return &Feature{
+// 		displayName: name,
+// 		fileName:    filename,
+// 		embedded:    true,
+// 		specs:       specs,
+// 	}
+// }
+
+// ntpServerFeature ...
+func ntpServerFeature() *Feature {
+	name := "ntpserver"
+	filename, specs, err := loadSpecFile(name)
+	if err != nil {
+		panic(err.Error())
+	}
+	return &Feature{
+		displayName: name,
+		fileName:    filename,
+		embedded:    true,
+		specs:       specs,
+	}
+}
+
+// ntpServerFeature ...
+func ntpClientFeature() *Feature {
+	name := "ntpclient"
+	filename, specs, err := loadSpecFile(name)
+	if err != nil {
+		panic(err.Error())
+	}
+	return &Feature{
+		displayName: name,
+		fileName:    filename,
+		embedded:    true,
+		specs:       specs,
+	}
+}
+
+// ansibleFeature from official repos ...
+func ansibleFeature() *Feature {
+	name := "ansible"
+	filename, specs, err := loadSpecFile(name)
+	if err != nil {
+		panic(err.Error())
+	}
+	return &Feature{
+		displayName: name,
+		fileName:    filename,
+		embedded:    true,
+		specs:       specs,
+	}
+}
+
+// postgresql4platformFeature feature. ...
+func postgresql4platformFeature() *Feature {
+	name := "postgresql4platform"
 	filename, specs, err := loadSpecFile(name)
 	if err != nil {
 		panic(err.Error())
@@ -195,24 +255,9 @@ func helmFeature() *Feature {
 	}
 }
 
-// sparkFeature ...
-func sparkFeature() *Feature {
-	name := "spark"
-	filename, specs, err := loadSpecFile(name)
-	if err != nil {
-		panic(err.Error())
-	}
-	return &Feature{
-		displayName: name,
-		fileName:    filename,
-		embedded:    true,
-		specs:       specs,
-	}
-}
-
-// reverseProxyFeature ...
-func reverseProxyFeature() *Feature {
-	name := "kong"
+// sparkmaster4platformFeature ...
+func sparkmaster4platformFeature() *Feature {
+	name := "sparkmaster4platform"
 	filename, specs, err := loadSpecFile(name)
 	if err != nil {
 		panic(err.Error())
@@ -375,9 +420,39 @@ func filebeatFeature() *Feature {
 	}
 }
 
-// keycloakFeature ...
-func keycloakFeature() *Feature {
-	name := "keycloak"
+// postgres4gatewayFeature ...
+func postgres4gatewayFeature() *Feature {
+	name := "postgres4gateway"
+	filename, specs, err := loadSpecFile(name)
+	if err != nil {
+		panic(err.Error())
+	}
+	return &Feature{
+		displayName: name,
+		fileName:    filename,
+		embedded:    true,
+		specs:       specs,
+	}
+}
+
+// edgeproxy4networkFeature ...
+func edgeproxy4networkFeature() *Feature {
+	name := "edgeproxy4network"
+	filename, specs, err := loadSpecFile(name)
+	if err != nil {
+		panic(err.Error())
+	}
+	return &Feature{
+		displayName: name,
+		fileName:    filename,
+		embedded:    true,
+		specs:       specs,
+	}
+}
+
+// keycloak4platformFeature ...
+func keycloak4platformFeature() *Feature {
+	name := "keycloak4platform"
 	filename, specs, err := loadSpecFile(name)
 	if err != nil {
 		panic(err.Error())
@@ -420,7 +495,52 @@ func elassandraFeature() *Feature {
 	}
 }
 
-// ListAvailables returns an array of availables features with the useable installers
+// consul4platformFeature ...
+func consul4platformFeature() *Feature {
+	name := "consul4platform"
+	filename, specs, err := loadSpecFile(name)
+	if err != nil {
+		panic(err.Error())
+	}
+	return &Feature{
+		displayName: name,
+		fileName:    filename,
+		embedded:    true,
+		specs:       specs,
+	}
+}
+
+// monitoring4platformFeature ...
+func monitoring4platformFeature() *Feature {
+	name := "monitoring4platform"
+	filename, specs, err := loadSpecFile(name)
+	if err != nil {
+		panic(err.Error())
+	}
+	return &Feature{
+		displayName: name,
+		fileName:    filename,
+		embedded:    true,
+		specs:       specs,
+	}
+}
+
+// geoserverFeature ...
+func geoserverFeature() *Feature {
+	name := "geoserver"
+	filename, specs, err := loadSpecFile(name)
+	if err != nil {
+		panic(err.Error())
+	}
+	return &Feature{
+		displayName: name,
+		fileName:    filename,
+		embedded:    true,
+		specs:       specs,
+	}
+}
+
+// ListAvailables returns an array of availables features with the usable installers
 // func ListAvailables() []string {
 // 	var output []string
 // 	for k, v := range allAvailables {

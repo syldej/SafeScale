@@ -36,13 +36,13 @@ const (
 	Timeout
 	// RPC is returned when an RPC call fails
 	RPC
-	// NotApplicable is returned when the command can't be honored in the context
+	// NotApplicable is returned when the command cannot be honored in the context
 	NotApplicable
 	// Duplicate is returned when resource already exists
 	Duplicate
 	// NotImplemented is returned when a function is not yet implemented
 	NotImplemented
 
-	// NextExitCode is the next error code useable
+	// NextExitCode is the next error code usable
 	NextExitCode
 )

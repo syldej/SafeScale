@@ -19,14 +19,16 @@ package listeners
 import (
 	"context"
 
+	log "github.com/sirupsen/logrus"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	pb "github.com/CS-SI/SafeScale/lib"
 	"github.com/CS-SI/SafeScale/lib/server/handlers"
-	"github.com/CS-SI/SafeScale/lib/server/utils"
 	conv "github.com/CS-SI/SafeScale/lib/server/utils"
-
-	log "github.com/sirupsen/logrus"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
+	srvutils "github.com/CS-SI/SafeScale/lib/server/utils"
+	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 )
 
 // TemplateHandler exists to ease integration tests
@@ -38,23 +40,29 @@ var TemplateHandler = handlers.NewTemplateHandler
 type TemplateListener struct{}
 
 // List available templates
-func (s *TemplateListener) List(ctx context.Context, in *pb.TemplateListRequest) (*pb.TemplateList, error) {
-	log.Debugf("Template List called")
+func (s *TemplateListener) List(ctx context.Context, in *pb.TemplateListRequest) (tl *pb.TemplateList, err error) {
+	if s == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, scerr.InvalidInstanceError().Error())
+	}
+	all := in.GetAll()
+
+	tracer := concurrency.NewTracer(nil, "", true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
 	ctx, cancelFunc := context.WithCancel(ctx)
-
-	if err := utils.ProcessRegister(ctx, cancelFunc, "Teplates List"); err == nil {
-		defer utils.ProcessDeregister(ctx)
+	if err := srvutils.JobRegister(ctx, cancelFunc, "Teplates List"); err == nil {
+		defer srvutils.JobDeregister(ctx)
 	}
 
 	tenant := GetCurrentTenant()
 	if tenant == nil {
 		log.Info("Can't list templates: no tenant set")
-		return nil, grpc.Errorf(codes.FailedPrecondition, "can't list templates: no tenant set")
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot list templates: no tenant set")
 	}
 
 	handler := TemplateHandler(tenant.Service)
-	templates, err := handler.List(ctx, in.GetAll())
+	templates, err := handler.List(ctx, all)
 	if err != nil {
 		return nil, err
 	}

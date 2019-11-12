@@ -48,7 +48,7 @@ import (
 func generateAesPassword(withSymbols bool) (string, error) {
 	pass, err := password.Generate(64, 10, map[bool]int{true: 10, false: 0}[withSymbols], false, true)
 	if err != nil {
-		return "", fmt.Errorf("Failed to generate the AES password : %s", err.Error())
+		return "", fmt.Errorf("failed to generate the AES password : %s", err.Error())
 	}
 	return pass, nil
 }
@@ -62,41 +62,41 @@ func loadRsaPrivateKey(keyFilePath string) (*rsa.PrivateKey, error) {
 	if _, err := os.Stat(keyFilePath); err != nil && os.IsNotExist(err) {
 		file, err := os.Create(keyFilePath)
 		if err != nil {
-			return nil, fmt.Errorf("Failed to create the file '%s' : %s", keyFilePath, err.Error())
+			return nil, fmt.Errorf("failed to create the file '%s' : %s", keyFilePath, err.Error())
 		}
 		err = file.Chmod(0600)
 		if err != nil {
-			return nil, fmt.Errorf("Failed to set the access rights of file '%s' : %s", keyFilePath, err.Error())
+			return nil, fmt.Errorf("failed to set the access rights of file '%s' : %s", keyFilePath, err.Error())
 		}
 
 		privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 		if err != nil {
-			return nil, fmt.Errorf("Failed to generate a 2048-bit RSA-key : %s", err.Error())
+			return nil, fmt.Errorf("failed to generate a 2048-bit RSA-key : %s", err.Error())
 		}
 		_, err = file.Write(x509.MarshalPKCS1PrivateKey(privateKey))
 		if err != nil {
-			return nil, fmt.Errorf("Failed to save the rsa key on file '%s' : %s", keyFilePath, err.Error())
+			return nil, fmt.Errorf("failed to save the rsa key on file '%s' : %s", keyFilePath, err.Error())
 		}
 		err = file.Close()
 		if err != nil {
-			return nil, fmt.Errorf("Failed to close the rsa key file '%s' : %s", keyFilePath, err.Error())
+			return nil, fmt.Errorf("failed to close the rsa key file '%s' : %s", keyFilePath, err.Error())
 		}
 	} else if err != nil {
-		return nil, fmt.Errorf("Failed to chek if file '%s' exists : %s", keyFilePath, err.Error())
+		return nil, fmt.Errorf("failed to chek if file '%s' exists : %s", keyFilePath, err.Error())
 	}
 
 	var keyBytes bytes.Buffer
 	file, err := os.Open(keyFilePath)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to open '%s' : %s", keyFilePath, err.Error())
+		return nil, fmt.Errorf("failed to open '%s' : %s", keyFilePath, err.Error())
 	}
 	_, err = keyBytes.ReadFrom(file)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to read the keyFile : %s", err.Error())
+		return nil, fmt.Errorf("failed to read the keyFile : %s", err.Error())
 	}
 	err = file.Close()
 	if err != nil {
-		return nil, fmt.Errorf("Failed to close the keyFile : %s", err.Error())
+		return nil, fmt.Errorf("failed to close the keyFile : %s", err.Error())
 	}
 	return x509.ParsePKCS1PrivateKey(keyBytes.Bytes())
 }
@@ -157,20 +157,20 @@ type Shard struct {
 }
 
 // NewShard return a new Shard
-func NewShard(bucket objectstorage.Bucket) *Shard {
+func NewShard(bucket objectstorage.Bucket) (*Shard, error) {
 	var name string
 	var err error
 
 	for i := 0; ; i++ {
 		if i > 10 {
-			panic(fmt.Sprintf("Issue on random shard name generations (or extremly++ unlucky)  : %v", err))
+			return nil, fmt.Errorf("Issue on random shard name generations (or extremely++ unlucky)  : %v", err)
 		}
-		// To be accepted by a maximum of objects storages, passwords should be generated without symbols
+		// To be accepted by a maximum of objects storage providers, passwords should be generated without symbols
 		if name, err = generateAesPassword(false); err != nil {
 			continue
 		}
 		name += ".bin"
-		//TODO-AJ is it usefull, as it could take up to 25 sec to check all the shards? (+- 0.10 sec / shard with 100ms ping)
+		//TODO-AJ is it useful, as it could take up to 25 sec to check all the shards? (+- 0.10 sec / shard with 100ms ping)
 		if obj, err := bucket.GetObject(name); err != nil && obj == nil {
 			break
 		}
@@ -179,7 +179,7 @@ func NewShard(bucket objectstorage.Bucket) *Shard {
 		Name:       name,
 		BucketName: bucket.GetName(),
 	}
-	return &shard
+	return &shard, nil
 }
 
 // GetStorageInfo return the name and bucket name of the shard
@@ -201,7 +201,7 @@ func (s *Shard) GetNonce() []byte {
 func (s *Shard) GenerateNonce(nonceSize int) ([]byte, error) {
 	s.Nonce = make([]byte, nonceSize)
 	if _, err := io.ReadFull(rand.Reader, s.Nonce); err != nil {
-		return nil, fmt.Errorf("Failed to read rand.Reader : %s", err)
+		return nil, fmt.Errorf("failed to read rand.Reader : %s", err)
 	}
 	return s.Nonce, nil
 }
@@ -247,7 +247,7 @@ type ChunkGroup struct {
 func NewChunkGroup(fileName string, fileSize int64, bucketNames []string) (*ChunkGroup, error) {
 	pass, err := generateAesPassword(true)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to generate the AES password : %s", err.Error())
+		return nil, fmt.Errorf("failed to generate the AES password : %s", err.Error())
 	}
 
 	cg := ChunkGroup{
@@ -320,24 +320,27 @@ func (cg *ChunkGroup) GetNbBatchs() int {
 	return int(math.Ceil(float64(cg.NbDataShards) / float64(cg.NbDataShardsPerBatch)))
 }
 
-//InitShards initalize the shard array and return the number of data shards and parity shards
-func (cg *ChunkGroup) InitShards(chunkSize int, maxBatchSize int, ratioNumerator int, ratioDenominator int, bucketGenerator *BucketGenerator) (int, int, error) {
+//InitShards initialize the shard array and return the number of data shards and parity shards
+func (cg *ChunkGroup) InitShards(chunkSize int, maxBatchSize int, ratioNumerator int, ratioDenominator int, bucketGenerator *BucketGenerator) (dataShards int, parityShards int, err error) {
 	cg.ChunkSize = chunkSize
 	cg.PaddingSize = chunkSize - int(cg.FileSize%int64(chunkSize))
 
 	cg.NbDataShards = int(math.Ceil(float64(cg.FileSize) / float64(chunkSize)))
 	if cg.NbDataShards > 256 {
-		return 0, 0, fmt.Errorf("Too many datashards, you have to increase the chunk size to at least %d bytes", cg.FileSize/256+1)
+		return 0, 0, fmt.Errorf("too many datashards, you have to increase the chunk size to at least %d bytes", cg.FileSize/256+1)
 	}
 	parityRatio := float64(ratioNumerator) / float64(ratioDenominator)
 	if parityRatio < 1 {
-		return 0, 0, fmt.Errorf("Ratio should be superior or equal to 1")
+		return 0, 0, fmt.Errorf("ratio should be superior or equal to 1")
 	}
 	cg.NbParityShards = int(math.Ceil(float64(cg.NbDataShards) / parityRatio))
 
 	cg.Shards = make([]*Shard, cg.NbDataShards+cg.NbParityShards)
 	for i := range cg.Shards {
-		cg.Shards[i] = NewShard(bucketGenerator.Next())
+		cg.Shards[i], err = NewShard(bucketGenerator.Next())
+		if err != nil {
+			return 0, 0, err
+		}
 	}
 
 	// determine batch size:
@@ -354,7 +357,7 @@ func (cg *ChunkGroup) InitShards(chunkSize int, maxBatchSize int, ratioNumerator
 //ComputeShardCheckSum compute the check sum of a given shard, with a reader of the shard datas, return the checksum
 func (cg *ChunkGroup) ComputeShardCheckSum(shardNum int, reader io.Reader) (string, error) {
 	if shardNum >= len(cg.Shards) {
-		return "", fmt.Errorf("There is only %d shards", len(cg.Shards))
+		return "", fmt.Errorf("there is only %d shards", len(cg.Shards))
 	}
 	return cg.Shards[shardNum].SetCheckSum(reader), nil
 }
@@ -362,7 +365,7 @@ func (cg *ChunkGroup) ComputeShardCheckSum(shardNum int, reader io.Reader) (stri
 //GenerateNonce generate a nonce for a given shard, return the nonce
 func (cg *ChunkGroup) GenerateNonce(shardNum int, nonceSize int) ([]byte, error) {
 	if shardNum >= len(cg.Shards) {
-		return nil, fmt.Errorf("There is only %d shards", len(cg.Shards))
+		return nil, fmt.Errorf("there is only %d shards", len(cg.Shards))
 	}
 	return cg.Shards[shardNum].GenerateNonce(nonceSize)
 }
@@ -423,11 +426,11 @@ func (cg *ChunkGroup) GetGCM() (cipher.AEAD, error) {
 	hash := sha256.Sum256([]byte(cg.AesPassword))
 	block, err := aes.NewCipher(hash[:])
 	if err != nil {
-		return nil, fmt.Errorf("Failed to get a new cipher : %s", err.Error())
+		return nil, fmt.Errorf("failed to get a new cipher : %s", err.Error())
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to get a new GCM : %s", err.Error())
+		return nil, fmt.Errorf("failed to get a new GCM : %s", err.Error())
 	}
 	return gcm, nil
 }
@@ -456,11 +459,11 @@ func DecryptChunkGroup(encrypted []byte, ki *KeyInfo) (*ChunkGroup, error) {
 	var cg ChunkGroup
 	gcm, err := ki.GetGCM()
 	if err != nil {
-		return nil, fmt.Errorf("Failed to get GCM : %s", err.Error())
+		return nil, fmt.Errorf("failed to get GCM : %s", err.Error())
 	}
 	cgJSON, err := gcm.Open(nil, ki.GetNonce(), encrypted, nil)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to decrypt chunkGroup : %s", err.Error())
+		return nil, fmt.Errorf("failed to decrypt chunkGroup : %s", err.Error())
 	}
 	err = serialize.FromJSON(cgJSON, &cg)
 	if err != nil {
@@ -498,7 +501,7 @@ type KeyInfo struct {
 func NewKeyInfo() (*KeyInfo, error) {
 	pass, err := generateAesPassword(true)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to generate AES password : %s", err.Error())
+		return nil, fmt.Errorf("failed to generate AES password : %s", err.Error())
 	}
 	ki := KeyInfo{
 		AesPassword: pass,
@@ -516,16 +519,16 @@ func (ki *KeyInfo) GetGCM() (cipher.AEAD, error) {
 	hash := sha256.Sum256([]byte(ki.AesPassword))
 	block, err := aes.NewCipher(hash[:])
 	if err != nil {
-		return nil, fmt.Errorf("Failed to get a new cipher : %s", err.Error())
+		return nil, fmt.Errorf("failed to get a new cipher : %s", err.Error())
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to get a new GCM : %s", err.Error())
+		return nil, fmt.Errorf("failed to get a new GCM : %s", err.Error())
 	}
 	if ki.Nonce == nil {
 		ki.Nonce = make([]byte, gcm.NonceSize())
 		if _, err := io.ReadFull(rand.Reader, ki.Nonce); err != nil {
-			return nil, fmt.Errorf("Failed to read rand.Reader : %s", err)
+			return nil, fmt.Errorf("failed to read rand.Reader : %s", err)
 		}
 	}
 	return gcm, nil

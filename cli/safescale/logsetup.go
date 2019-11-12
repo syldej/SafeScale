@@ -4,12 +4,14 @@ import (
 	"io"
 	"os"
 
-	"github.com/CS-SI/SafeScale/lib/utils"
 	log "github.com/sirupsen/logrus"
+
+	"github.com/CS-SI/SafeScale/lib/utils"
+	"github.com/CS-SI/SafeScale/lib/utils/commonlog"
 )
 
 func init() {
-	log.SetFormatter(&utils.MyFormatter{TextFormatter: log.TextFormatter{ForceColors: true, TimestampFormat: "2006-01-02 15:04:05", FullTimestamp: true, DisableLevelTruncation: true}})
+	log.SetFormatter(commonlog.GetDefaultFormatter())
 	log.SetLevel(log.DebugLevel)
 
 	// Log as JSON instead of the default ASCII formatter.

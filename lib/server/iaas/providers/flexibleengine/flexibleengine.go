@@ -37,8 +37,6 @@ import (
 )
 
 const (
-	defaultUser string = "cloud"
-
 	authURL string = "https://iam.%s.prod-cloud-ocb.orange-business.com"
 )
 
@@ -62,11 +60,13 @@ var gpuMap = map[string]gpuCfg{
 	},
 }
 
-// provider is the providerementation of FlexibleEngine provider
+// provider is the implementation of FlexibleEngine provider
 type provider struct {
 	*huaweicloud.Stack
 
 	defaultSecurityGroupName string
+
+	tenantParameters map[string]interface{}
 }
 
 // New creates a new instance of flexibleengine provider
@@ -76,7 +76,6 @@ func New() providerapi.Provider {
 
 // Build initializes a new FlexibleEngine instance from parameters
 func (p *provider) Build(params map[string]interface{}) (providerapi.Provider, error) {
-
 	identity, _ := params["identity"].(map[string]interface{})
 	compute, _ := params["compute"].(map[string]interface{})
 	network, _ := params["network"].(map[string]interface{})
@@ -196,7 +195,11 @@ func (p *provider) Build(params map[string]interface{}) (providerapi.Provider, e
 		}
 	}
 
-	return &provider{Stack: stack}, nil
+	newP := &provider{
+		Stack:            stack,
+		tenantParameters: params,
+	}
+	return newP, nil
 }
 
 func addGPUCfg(tpl *resources.HostTemplate) {
@@ -323,6 +326,7 @@ func (p *provider) GetConfigurationOptions() (providers.Config, error) {
 	cfg := providers.ConfigMap{}
 
 	opts := p.Stack.GetConfigurationOptions()
+	// caps := p.GetCapabilities()
 	cfg.Set("DNSList", opts.DNSList)
 	cfg.Set("AutoHostNetworkInterfaces", opts.AutoHostNetworkInterfaces)
 	cfg.Set("UseLayer3Networking", opts.UseLayer3Networking)
@@ -337,6 +341,18 @@ func (p *provider) GetConfigurationOptions() (providers.Config, error) {
 // GetName returns the providerName
 func (p *provider) GetName() string {
 	return "flexibleengine"
+}
+
+// GetTenantParameters returns the tenant parameters as-is
+func (p *provider) GetTenantParameters() map[string]interface{} {
+	return p.tenantParameters
+}
+
+// GetCapabilities returns the capabilities of the provider
+func (p *provider) GetCapabilities() providers.Capabilities {
+	return providers.Capabilities{
+		PrivateVirtualIP: true,
+	}
 }
 
 func init() {

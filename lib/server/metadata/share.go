@@ -17,15 +17,13 @@
 package metadata
 
 import (
-	"fmt"
-
-	log "github.com/sirupsen/logrus"
-
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
-	"github.com/CS-SI/SafeScale/lib/utils"
+	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
 	"github.com/CS-SI/SafeScale/lib/utils/metadata"
 	"github.com/CS-SI/SafeScale/lib/utils/retry"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 	"github.com/CS-SI/SafeScale/lib/utils/serialize"
+	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 )
 
 const (
@@ -41,10 +39,14 @@ type Share struct {
 }
 
 // NewShare creates an instance of metadata.Nas
-func NewShare(svc iaas.Service) *Share {
-	return &Share{
-		item: metadata.NewItem(svc, shareFolderName),
+func NewShare(svc iaas.Service) (*Share, error) {
+	aShare, err := metadata.NewItem(svc, shareFolderName)
+	if err != nil {
+		return nil, err
 	}
+	return &Share{
+		item: aShare,
+	}, nil
 }
 
 type shareItem struct {
@@ -65,22 +67,26 @@ func (n *shareItem) Deserialize(buf []byte) error {
 }
 
 // Carry links an export instance to the Metadata instance
-func (ms *Share) Carry(hostID, hostName, shareID, shareName string) *Share {
-	if hostID == "" {
-		panic("hostID is empty!")
-	}
-	if hostName == "" {
-		panic("hostName is empty!")
-	}
-	if shareID == "" {
-		panic("shareID is empty!")
-	}
-	if shareName == "" {
-		panic("shareName is empty!")
+func (ms *Share) Carry(hostID, hostName, shareID, shareName string) (*Share, error) {
+	if ms == nil {
+		return nil, scerr.InvalidInstanceError()
 	}
 	if ms.item == nil {
-		panic("ms.item is nil!")
+		return nil, scerr.InvalidInstanceContentError("ms.item", "cannot be nil")
 	}
+	if hostID == "" {
+		return nil, scerr.InvalidParameterError("hostID", "cannot be empty string")
+	}
+	if hostName == "" {
+		return nil, scerr.InvalidParameterError("hostName", "cannot be empty string")
+	}
+	if shareID == "" {
+		return nil, scerr.InvalidParameterError("shareID", "cannot be empty string")
+	}
+	if shareName == "" {
+		return nil, scerr.InvalidParameterError("shareName", "cannot be empty string")
+	}
+
 	ni := shareItem{
 		HostID:    hostID,
 		HostName:  hostName,
@@ -90,24 +96,31 @@ func (ms *Share) Carry(hostID, hostName, shareID, shareName string) *Share {
 	ms.item.Carry(&ni)
 	ms.name = &ni.ShareName
 	ms.id = &ni.ShareID
-	return ms
+	return ms, nil
 }
 
 // Get returns the ID of the host owning the share
-func (ms *Share) Get() string {
+func (ms *Share) Get() (string, error) {
+	if ms == nil {
+		return "", scerr.InvalidInstanceError()
+	}
 	if ms.item == nil {
-		panic("ms.item is nil!")
+		return "", scerr.InvalidInstanceContentError("ms.item", "cannot be nil")
 	}
 	if ei, ok := ms.item.Get().(*shareItem); ok {
-		return ei.HostName
+		return ei.HostName, nil
 	}
-	panic("invalid content in metadata!")
+
+	return "", scerr.InconsistentError("share metadata content must be a *shareItem")
 }
 
 // Write updates the metadata corresponding to the share in the Object Storage
 func (ms *Share) Write() error {
+	if ms == nil {
+		return scerr.InvalidInstanceError()
+	}
 	if ms.item == nil {
-		panic("ms.item is nil!")
+		return scerr.InvalidInstanceContentError("ms.item", "cannot be nil")
 	}
 	err := ms.item.WriteInto(ByIDFolderName, *ms.id)
 	if err != nil {
@@ -116,10 +129,28 @@ func (ms *Share) Write() error {
 	return ms.item.WriteInto(ByNameFolderName, *ms.name)
 }
 
+// ReadByReference tries to read 'ref' as an ID, and if not found as a name
+func (ms *Share) ReadByReference(id string) (err error) {
+	if ms == nil {
+		return scerr.InvalidInstanceError()
+	}
+	errID := ms.ReadByID(id)
+	if errID != nil {
+		errName := ms.ReadByName(id)
+		if errName != nil {
+			return errName
+		}
+	}
+	return nil
+}
+
 // ReadByID reads the metadata of an export identified by ID from Object Storage
 func (ms *Share) ReadByID(id string) error {
+	if ms == nil {
+		return scerr.InvalidInstanceError()
+	}
 	if ms.item == nil {
-		panic("ms.item is nil!")
+		return scerr.InvalidInstanceContentError("ms.item", "cannot be nil")
 	}
 	var si shareItem
 	err := ms.item.ReadFrom(ByIDFolderName, id, func(buf []byte) (serialize.Serializable, error) {
@@ -132,14 +163,19 @@ func (ms *Share) ReadByID(id string) error {
 	if err != nil {
 		return err
 	}
-	ms.Carry(si.HostID, si.HostName, si.ShareID, si.ShareName)
+	if _, err := ms.Carry(si.HostID, si.HostName, si.ShareID, si.ShareName); err != nil {
+		return err
+	}
 	return nil
 }
 
 // ReadByName reads the metadata of a nas identified by name
 func (ms *Share) ReadByName(name string) error {
+	if ms == nil {
+		return scerr.InvalidInstanceError()
+	}
 	if ms.item == nil {
-		panic("ms.name is nil!")
+		return scerr.InvalidInstanceContentError("ms.item", "cannot be nil")
 	}
 	var si shareItem
 	err := ms.item.ReadFrom(ByNameFolderName, name, func(buf []byte) (serialize.Serializable, error) {
@@ -152,12 +188,20 @@ func (ms *Share) ReadByName(name string) error {
 	if err != nil {
 		return err
 	}
-	ms.Carry(si.HostID, si.HostName, si.ShareID, si.ShareName)
+	if _, err := ms.Carry(si.HostID, si.HostName, si.ShareID, si.ShareName); err != nil {
+		return err
+	}
 	return nil
 }
 
 // Delete updates the metadata corresponding to the share
 func (ms *Share) Delete() error {
+	if ms == nil {
+		return scerr.InvalidInstanceError()
+	}
+	if ms.item == nil {
+		return scerr.InvalidInstanceContentError("ms.item", "cannot be nil")
+	}
 	err := ms.item.DeleteFrom(ByIDFolderName, *ms.id)
 	if err != nil {
 		return err
@@ -167,6 +211,12 @@ func (ms *Share) Delete() error {
 
 // Browse walks through shares folder and executes a callback for each entry
 func (ms *Share) Browse(callback func(string, string) error) error {
+	if ms == nil {
+		return scerr.InvalidInstanceError()
+	}
+	if ms.item == nil {
+		return scerr.InvalidInstanceContentError("ms.item", "cannot be nil")
+	}
 	return ms.item.BrowseInto(ByNameFolderName, func(buf []byte) error {
 		si := shareItem{}
 		err := (&si).Deserialize(buf)
@@ -227,64 +277,137 @@ func (ms *Share) Browse(callback func(string, string) error) error {
 // 	return client, nil
 // }
 
-// Acquire waits until the write lock is available, then locks the metadata
+// Acquire waits until the write lock is available, then locks the metadata.
+//
+// May panic (see scerr.OnPanic() usage to intercept and translate it to an error)
 func (ms *Share) Acquire() {
+	if ms == nil {
+		panic("invalid instance")
+	}
+	if ms.item == nil {
+		panic("invalid instance content: ms.item cannot be nil")
+	}
 	ms.item.Acquire()
 }
 
 // Release unlocks the metadata
+//
+// May panic (see scerr.OnPanic() usage to intercept and translate it to an error)
 func (ms *Share) Release() {
+	if ms == nil {
+		panic("invalid instance")
+	}
+	if ms.item == nil {
+		panic("invalid instance content: ms.item cannot be nil")
+	}
 	ms.item.Release()
 }
 
 // SaveShare saves the Nas definition in Object Storage
 func SaveShare(svc iaas.Service, hostID, hostName, shareID, shareName string) (*Share, error) {
-	ms := NewShare(svc).Carry(hostID, hostName, shareID, shareName)
+	if svc == nil {
+		return nil, scerr.InvalidParameterError("svc", "cannot be nil")
+	}
+	if hostID == "" {
+		return nil, scerr.InvalidParameterError("hostID", "cannot be empty string")
+	}
+	if hostName == "" {
+		return nil, scerr.InvalidParameterError("hostName", "cannot be empty string")
+	}
+	if shareID == "" {
+		return nil, scerr.InvalidParameterError("shareID", "cannot be empty string")
+	}
+	if shareName == "" {
+		return nil, scerr.InvalidParameterError("shareName", "cannot be empty string")
+	}
+
+	aShare, err := NewShare(svc)
+	if err != nil {
+		return nil, err
+	}
+	ms, err := aShare.Carry(hostID, hostName, shareID, shareName)
+	if err != nil {
+		return nil, err
+	}
 	return ms, ms.Write()
 }
 
 // RemoveShare removes the share definition from Object Storage
 func RemoveShare(svc iaas.Service, hostID, hostName, shareID, shareName string) error {
-	return NewShare(svc).Carry(hostID, hostName, shareID, shareName).Delete()
+	if svc == nil {
+		return scerr.InvalidParameterError("svc", "cannot be nil")
+	}
+	if hostID == "" {
+		return scerr.InvalidParameterError("hostID", "cannot be empty string")
+	}
+	if hostName == "" {
+		return scerr.InvalidParameterError("hostName", "cannot be empty string")
+	}
+	if shareID == "" {
+		return scerr.InvalidParameterError("shareID", "cannot be empty string")
+	}
+	if shareName == "" {
+		return scerr.InvalidParameterError("shareName", "cannot be empty string")
+	}
+
+	aShare, err := NewShare(svc)
+	if err != nil {
+		return err
+	}
+
+	aShare, err = aShare.Carry(hostID, hostName, shareID, shareName)
+	if err != nil {
+		return err
+	}
+
+	return aShare.Delete()
 }
 
 // LoadShare returns the name of the host owing the share 'ref', read from Object Storage
 // logic: Read by ID; if error is ErrNotFound then read by name; if error is ErrNotFound return this error
 //        In case of any other error, abort the retry to propagate the error
 //        If retry times out, return errNotFound
-func LoadShare(svc iaas.Service, ref string) (string, error) {
-	ms := NewShare(svc)
-	var innerErr error
-	err := retry.WhileUnsuccessfulDelay1Second(
-		func() error {
-			innerErr = ms.ReadByID(ref)
-			if innerErr != nil {
-				if _, ok := innerErr.(utils.ErrNotFound); ok {
-					innerErr = ms.ReadByName(ref)
-					if innerErr != nil {
-						if _, ok := innerErr.(utils.ErrNotFound); ok {
-							return innerErr
-						}
-					}
-				}
-			}
-			return nil
-		},
-		2*utils.GetDefaultDelay(),
-	)
-	// If retry timed out, log it and return error ErrNotFound
+func LoadShare(svc iaas.Service, ref string) (share string, err error) {
+	if svc == nil {
+		return "", scerr.InvalidParameterError("svc", "cannot be nil")
+	}
+	if ref == "" {
+		return "", scerr.InvalidParameterError("ref", "cannot be empty string")
+	}
+
+	tracer := concurrency.NewTracer(nil, "(<svc>, '"+ref+"')", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	ms, err := NewShare(svc)
 	if err != nil {
-		if _, ok := err.(retry.ErrTimeout); ok {
-			log.Debugf("timeout reading metadata of share '%s'", ref)
-			return "", utils.NotFoundError(fmt.Sprintf("failed to load metadata of share '%s'", ref))
-		}
 		return "", err
 	}
-	// Returns the error different than ErrNotFound to caller
-	if innerErr != nil {
-		return "", innerErr
+
+	retryErr := retry.WhileUnsuccessfulDelay1Second(
+		func() error {
+			innerErr := ms.ReadByReference(ref)
+			if innerErr != nil {
+				if _, ok := innerErr.(scerr.ErrNotFound); ok {
+					return retry.StopRetryError("no metadata found", innerErr)
+				}
+				return innerErr
+			}
+
+			return nil
+		},
+		2*temporal.GetDefaultDelay(),
+	)
+	// If retry timed out, log it and return error ErrNotFound
+	if retryErr != nil {
+		// If it's not a timeout is something we don't know how to handle yet
+		if _, ok := retryErr.(scerr.ErrTimeout); !ok {
+			return "", scerr.Cause(retryErr)
+		}
+		return "", retryErr
 	}
-	return ms.Get(), nil
+
+	return ms.Get()
 }
 
 // // MountNas add the client nas to the Nas definition from Object Storage

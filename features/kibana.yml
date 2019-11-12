@@ -19,38 +19,33 @@ feature:
     suitableFor:
         host: yes
         cluster: all
-    requirements:
-        features:
-            - elasticsearch
     parameters:
+        - Version=7.2.0
         - KibanaPort=5601
         - KibanaHost={{.HostIP}}
-        - ElasticsearchURL=http://localhost:9200/
+        - ElasticsearchURL=http://{{.HostIP}}:9200/
+    requirements:
+        cluster:
+            features:
+                - elasticsearch
 
     install:
         bash:
             check:
-                pace: pkg
+                pace: docker
                 steps:
-                    pkg:
+                    docker:
                         targets:
                             hosts: yes
                             masters: all
                             nodes: no
                         run: |
-                            docker image ls {{ "--format '{{.Repository}}:{{.Tag}}'" }} | grep 'bitnami/kibana:7' &>/dev/null
+                            sfDoesDockerRunContainer docker.elastic.co/kibana/kibana:{{ .Version }} || sfFail 192
+                            sfExit
 
             add:
-                pace: image,config,start
+                pace: config,start
                 steps:
-                    image:
-                        targets:
-                            hosts: yes
-                            masters: all
-                            nodes: no
-                        run: |
-                            docker pull bitnami/kibana:7
-
                     config:
                         targets:
                             hosts: yes
@@ -59,25 +54,37 @@ feature:
                         run: |
                             mkdir -p ${SF_ETCDIR}/kibana ${SF_VARDIR}/kibana
 
-                            cat >${SF_ETCDIR}/kibana/docker-compose.yml <<EOF
-                            version: '2'
+                            cat >${SF_ETCDIR}/kibana/config.yml <<-EOF
+                            server:
+                                name: {{.Hostname}}
+                                host: 0.0.0.0
+                            console.enabled: true
+                            elasticsearch:
+                            {{- if .ClusterFlavor }}
+                                hosts:
+                                {{- range .MasterIPs }}
+                                    - "http://{{ . }}:9200/"
+                                {{ end}}
+                            {{ else }}
+                                hosts:
+                                    - "{{ .ElasticsearchURL }}"
+                            {{ end }}
+                            EOF
+
+                            cat >${SF_ETCDIR}/kibana/docker-compose.yml <<-EOF
+                            version: '2.1'
 
                             services:
                                 server:
-                                    image: 'bitnami/kibana:7'
+                                    image: docker.elastic.co/kibana/kibana:{{ .Version }}
+                                    network_mode: "bridge"
                                     ports:
-                                        - {{.HostIP}}:{{.KibanaPort}}:5601
-                                    environment:
-                                    {{ if .ClusterFlavor }}
-                                        - KIBANA_ELASTICSEARCH_URL="https://{{.GatewayIP}}/services/elasticsearch/"
-                                    {{ else }}
-                                        - KIBANA_ELASTICSEARCH_URL="{{ .ElasticsearchURL }}
-                                    {{ end }}
+                                        - "{{.HostIP}}:{{ .KibanaPort }}:5601"
                                     volumes:
-                                        - ${SF_VARDIR}/kibana:/bitnami
+                                        - ${SF_ETCDIR}/kibana/config.yml:/usr/share/kibana/config/kibana.yml
                                     restart: always
                             EOF
-                            exit 0
+                            sfExit
 
                     start:
                         targets:
@@ -90,7 +97,8 @@ feature:
                             {{ else }}
                             OPTIONS=
                             {{ end }}
-                            docker-compose -f ${SF_ETCDIR}/kibana/docker-compose.yml $OPTIONS up -d
+                            docker-compose -f ${SF_ETCDIR}/kibana/docker-compose.yml $OPTIONS up -d || sfFail 193
+                            sfExit
 
             remove:
                 pace: stop,remove
@@ -101,12 +109,15 @@ feature:
                             masters: all
                             nodes: no
                         run: |
+                            if [ -f ${SF_ETCDIR}/kibana/docker-compose.yml ]; then
                             {{ if .ClusterFlavor }}
-                            OPTIONS="-p kibana4safescale"
+                                OPTIONS="-p kibana4safescale"
                             {{ else }}
-                            OPTIONS=
+                                OPTIONS=
                             {{ end }}
-                            docker-compose -f ${SF_ETCDIR}/kibana/docker-compose.yml $OPTIONS up -d
+                                docker-compose -f ${SF_ETCDIR}/kibana/docker-compose.yml $OPTIONS rm --stop -v --force || sfFail 194
+                            fi
+                            sfExit
 
                     remove:
                         targets:
@@ -114,31 +125,45 @@ feature:
                             masters: all
                             nodes: no
                         run: |
-                            docker image rm -f bitnami/kibana:7
+                            docker image rm -f docker.elastic.co/kibana/kibana:{{ .Version }}
                             rm -rf ${SF_ETCDIR}/kibana ${SF_VARDIR}/kibana
-                            exit 0
+                            sfExit
 
     proxy:
         rules:
-            - name: kibana_svc
-              type: service
+            - name: kibana_backend
+              type: upstream
               targets:
                   hosts: true
                   masters: all
               content: |
                   {
-                      "name": "kibana_{{.Hostname}}",
-                      "url": "http://{{.HostIP}}:5061/"
+                      "target": "{{.HostIP}}:5061",
+                      "weight": 100
+                  }
+
+            - name: kibana_svc
+              type: service
+              targets:
+                  hosts: true
+                  masters: any
+              content: |
+                  {
+                      "protocol": "http",
+                      "host": "kibana_backend",
+                      "source-control": {
+                          "whitelist": [ "{{ .CIDR }}", "{{ .DefaultRouteIP }}", "127.0.0.1" ]
+                      }
                   }
 
             - name: kibana_route
               type: route
               targets:
                   hosts: true
-                  masters: all
+                  masters: any
               content: |
                   {
-                      "paths": ["/monitoring/kibana/"],
+                      "paths": [ "/kibana/" ],
                       "service": { "id": "{{.kibana_svc}}" }
                   }
 

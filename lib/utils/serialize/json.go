@@ -17,7 +17,10 @@
 package serialize
 
 import (
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 	"sync"
+
+	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
 )
 
 // jsonProperty contains data and a RWMutex to handle sync
@@ -51,16 +54,20 @@ type SyncedJSONProperty struct {
 // on 'apply' success.
 // If the extension is locked for read, no change will be encoded into the extension.
 // The lock applied on the extension is automatically released on exit.
-func (sp *SyncedJSONProperty) ThenUse(apply func(interface{}) error) error {
+func (sp *SyncedJSONProperty) ThenUse(apply func(interface{}) error) (err error) {
 	if sp == nil {
-		panic("Calling utils.serialize.SyncedJSONProperty::ThenUse() from a nil pointer!")
+		return scerr.InvalidInstanceError()
 	}
 	if sp.jsonProperty == nil {
-		panic("sp.jsonProperty is nil!")
+		return scerr.InvalidParameterError("sp.jsonProperty", "cannot be nil")
 	}
 	if apply == nil {
-		panic("apply is nil!")
+		return scerr.InvalidParameterError("apply", "cannot be nil")
 	}
+
+	tracer := concurrency.NewTracer(nil, "", true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitTraceError(tracer.TraceMessage(""), &err)()
 	defer sp.unlock()
 
 	if data, ok := sp.jsonProperty.Data.(Property); ok {
@@ -123,7 +130,7 @@ func (x *JSONProperties) Lookup(key string) bool {
 // LockForRead is used to lock an extension for read
 // Returns a pointer to LockedEncodedExtension, on which can be applied method 'Use()'
 // If no extension exists corresponding to the key, an empty extension is created (in other words, this call
-// can't fail because a key doesn't exist).
+// cannot fail because a key doesn't exist).
 func (x *JSONProperties) LockForRead(key string) *SyncedJSONProperty {
 	if x == nil {
 		panic("Calling utils.serialize.JSONProperties::LockForRead() from nil pointer!")
@@ -161,7 +168,7 @@ func (x *JSONProperties) LockForRead(key string) *SyncedJSONProperty {
 // LockForWrite is used to lock an extension for write
 // Returns a pointer to LockedEncodedExtension, on which can be applied method 'Use()'
 // If no extension exists corresponding to the key, an empty one is created (in other words, this call
-// can't fail because a key doesn't exist).
+// cannot fail because a key doesn't exist).
 func (x *JSONProperties) LockForWrite(key string) *SyncedJSONProperty {
 	if x == nil {
 		panic("Calling x.LockForWrite() with x==nil!")
@@ -202,7 +209,7 @@ func (x *JSONProperties) SetModule(module string) {
 		return
 	}
 	if x.module != "" {
-		panic("x.SetModule() can't be changed if x.module is already set!")
+		panic("x.SetModule() cannot be changed if x.module is already set!")
 	}
 	if module == "" {
 		panic("module is empty!")

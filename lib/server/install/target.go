@@ -19,6 +19,7 @@ package install
 import (
 	"github.com/CS-SI/SafeScale/lib/server/install/enums/Method"
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 
 	clusterapi "github.com/CS-SI/SafeScale/lib/server/cluster/api"
 	"github.com/CS-SI/SafeScale/lib/server/cluster/enums/Flavor"
@@ -34,7 +35,7 @@ type Target interface {
 	Name() string
 	// Type returns the name of the target
 	Type() string
-	// Methods returns a list of installation methods useable on the target, ordered from
+	// Methods returns a list of installation methods usable on the target, ordered from
 	// upper to lower priority (1 = highest priority)
 	Methods() map[uint8]Method.Enum
 	// Installed returns a list of installed features
@@ -49,15 +50,15 @@ type HostTarget struct {
 }
 
 // NewHostTarget ...
-func NewHostTarget(host *pb.Host) Target {
+func NewHostTarget(host *pb.Host) (Target, error) {
 	if host == nil {
-		panic("Invalid parameter 'host': can't be nil!")
+		return nil, scerr.InvalidParameterError("host", "cannot be nil")
 	}
 	return createHostTarget(host)
 }
 
 // createHostTarget ...
-func createHostTarget(host *pb.Host) *HostTarget {
+func createHostTarget(host *pb.Host) (*HostTarget, error) {
 	var (
 		index   uint8
 		methods = map[uint8]Method.Enum{}
@@ -84,7 +85,7 @@ func createHostTarget(host *pb.Host) *HostTarget {
 		host:    host,
 		methods: methods,
 		name:    host.Name,
-	}
+	}, nil
 }
 
 // Type returns the type of the Target
@@ -97,7 +98,7 @@ func (t *HostTarget) Name() string {
 	return t.name
 }
 
-// Methods returns a list of packaging managers useable on the target
+// Methods returns a list of packaging managers usable on the target
 func (t *HostTarget) Methods() map[uint8]Method.Enum {
 	return t.methods
 }
@@ -116,9 +117,9 @@ type ClusterTarget struct {
 }
 
 // NewClusterTarget ...
-func NewClusterTarget(task concurrency.Task, cluster clusterapi.Cluster) Target {
+func NewClusterTarget(task concurrency.Task, cluster clusterapi.Cluster) (Target, error) {
 	if cluster == nil {
-		panic("cluster is nil!")
+		return nil, scerr.InvalidParameterError("cluster", "cannot be nil")
 	}
 	var (
 		index   uint8
@@ -135,7 +136,7 @@ func NewClusterTarget(task concurrency.Task, cluster clusterapi.Cluster) Target 
 		cluster: cluster,
 		methods: methods,
 		name:    identity.Name,
-	}
+	}, nil
 }
 
 // Type returns the type of the Target
@@ -148,7 +149,7 @@ func (t *ClusterTarget) Name() string {
 	return t.name
 }
 
-// Methods returns a list of packaging managers useable on the target
+// Methods returns a list of packaging managers usable on the target
 func (t *ClusterTarget) Methods() map[uint8]Method.Enum {
 	return t.methods
 }
@@ -165,13 +166,15 @@ type NodeTarget struct {
 }
 
 // NewNodeTarget ...
-func NewNodeTarget(host *pb.Host) Target {
+func NewNodeTarget(host *pb.Host) (Target, error) {
 	if host == nil {
-		panic("host is nil!")
+		return nil, scerr.InvalidParameterError("host", "cannot be nil")
 	}
-	return &NodeTarget{
-		HostTarget: createHostTarget(host),
+	t, err := createHostTarget(host)
+	if err != nil {
+		return nil, err
 	}
+	return &NodeTarget{HostTarget: t}, nil
 }
 
 // Type returns the type of the Target

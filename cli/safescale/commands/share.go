@@ -19,6 +19,9 @@ package commands
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
+
+	"github.com/sirupsen/logrus"
 
 	"github.com/urfave/cli"
 
@@ -27,7 +30,10 @@ import (
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
 	"github.com/CS-SI/SafeScale/lib/utils"
 	clitools "github.com/CS-SI/SafeScale/lib/utils/cli"
+	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 )
+
+var shareCmdName = "share"
 
 // ShareCmd ssh command
 var ShareCmd = cli.Command{
@@ -89,6 +95,7 @@ var shareCreate = cli.Command{
 		},
 	},
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", shareCmdName, c.Command.Name, c.Args())
 		if c.NArg() != 2 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Nas_name> and/or <Host_name>."))
@@ -110,7 +117,7 @@ var shareCreate = cli.Command{
 			},
 			SecurityModes: c.StringSlice("securityModes"),
 		}
-		err := client.New().Share.Create(def, client.DefaultExecutionTimeout)
+		err := client.New().Share.Create(def, temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(client.DecorateError(err, "creation of share", true).Error()))
 		}
@@ -124,27 +131,31 @@ var shareDelete = cli.Command{
 	Usage:     "Delete a share",
 	ArgsUsage: "<Share_name> [<Share_name>...]",
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", shareCmdName, c.Command.Name, c.Args())
 		if c.NArg() < 1 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Share_name>."))
 		}
 
 		var (
-			wg        sync.WaitGroup
-			errs      int
-			shareList []string
+			wg         sync.WaitGroup
+			errs       int32
+			shareList  []string
+			errMessage atomic.Value
 		)
-		errMessage := ""
+		errMessage.Store("")
 
 		shareList = append(shareList, c.Args().First())
 		shareList = append(shareList, c.Args().Tail()...)
 
 		shareDeleter := func(aname string) {
 			defer wg.Done()
-			err := client.New().Share.Delete(aname, client.DefaultExecutionTimeout)
+			err := client.New().Share.Delete(aname, temporal.GetExecutionTimeout())
 			if err != nil {
-				errMessage += fmt.Sprintf("Error while deleting share %s : %s \n", aname, utils.Capitalize(err.Error()))
-				errs++
+				msgs := errMessage.Load().(string)
+				msgs += fmt.Sprintf("error while deleting share %s: %s", aname, utils.Capitalize(err.Error()))
+				errMessage.Store(msgs)
+				atomic.AddInt32(&errs, 1)
 			}
 		}
 
@@ -155,7 +166,7 @@ var shareDelete = cli.Command{
 		wg.Wait()
 
 		if errs > 0 {
-			return clitools.FailureResponse(clitools.ExitOnRPC(errMessage))
+			return clitools.FailureResponse(clitools.ExitOnRPC(errMessage.Load().(string)))
 		}
 		return clitools.SuccessResponse(nil)
 	},
@@ -166,6 +177,7 @@ var shareList = cli.Command{
 	Aliases: []string{"ls"},
 	Usage:   "List all created shared",
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", shareCmdName, c.Command.Name, c.Args())
 		list, err := client.New().Share.List(0)
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(client.DecorateError(err, "list of shares", false).Error()))
@@ -186,10 +198,11 @@ var shareMount = cli.Command{
 		},
 		cli.BoolFlag{
 			Name:  "ac",
-			Usage: "Disable chache coherence to improve performences",
+			Usage: "Disable cache coherence to improve performances",
 		},
 	},
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", shareCmdName, c.Command.Name, c.Args())
 		if c.NArg() != 2 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Nas_name> and/or <Host_name>."))
@@ -205,7 +218,7 @@ var shareMount = cli.Command{
 			Type:      "nfs",
 			WithCache: c.Bool("ac"),
 		}
-		err := client.New().Share.Mount(def, client.DefaultExecutionTimeout)
+		err := client.New().Share.Mount(def, temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(client.DecorateError(err, "mount of nas", true).Error()))
 		}
@@ -219,6 +232,7 @@ var shareUnmount = cli.Command{
 	Usage:     "Unmount a share from an host",
 	ArgsUsage: "<Share_name> <Host_name|Host_ID>",
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", shareCmdName, c.Command.Name, c.Args())
 		if c.NArg() != 2 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Nas_name> and/or <Host_name>."))
@@ -230,7 +244,7 @@ var shareUnmount = cli.Command{
 			Host:  &pb.Reference{Name: hostName},
 			Share: &pb.Reference{Name: shareName},
 		}
-		err := client.New().Share.Unmount(def, client.DefaultExecutionTimeout)
+		err := client.New().Share.Unmount(def, temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(client.DecorateError(err, "unmount of share", true).Error()))
 		}
@@ -244,12 +258,13 @@ var shareInspect = cli.Command{
 	Usage:     "List the share information and clients connected to it",
 	ArgsUsage: "<Share_name>",
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", shareCmdName, c.Command.Name, c.Args())
 		if c.NArg() != 1 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Share_name>."))
 		}
 
-		list, err := client.New().Share.Inspect(c.Args().Get(0), client.DefaultExecutionTimeout)
+		list, err := client.New().Share.Inspect(c.Args().Get(0), temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(client.DecorateError(err, "inspection of share", false).Error()))
 		}

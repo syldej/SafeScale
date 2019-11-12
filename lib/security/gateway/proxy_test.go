@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"github.com/CS-SI/SafeScale/lib/utils"
+	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/CS-SI/SafeScale/lib/security/model"
-	oidc "github.com/coreos/go-oidc"
+	"github.com/coreos/go-oidc"
 	"github.com/gorilla/websocket"
 	"golang.org/x/oauth2"
 
@@ -22,7 +22,7 @@ import (
 )
 
 func Clean() {
-	db := model.NewDataAccess("sqlite3", "/tmp/safe-security.db").Get()
+	db, _ := model.NewDataAccess("sqlite3", "/tmp/safe-security.db").Get()
 	defer func() {
 		_ = db.Close()
 	}()
@@ -30,7 +30,12 @@ func Clean() {
 }
 func runTestService() {
 	da := model.NewDataAccess("sqlite3", "/tmp/safe-security.db")
-	db := da.Get().Debug()
+	dbg, err := da.Get()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	db := dbg.Debug()
 	defer func() {
 		_ = db.Close()
 	}()
@@ -119,7 +124,7 @@ func runTestService() {
 					now := time.Now()
 					text, _ := now.MarshalText()
 					_ = conn.WriteMessage(websocket.TextMessage, text)
-					time.Sleep(utils.GetMinDelay())
+					time.Sleep(temporal.GetMinDelay())
 				}
 
 			}()
@@ -166,7 +171,7 @@ func TestGateway(t *testing.T) {
 
 	beauty := make(chan bool)
 	go gateway.Start(":4443", beauty)
-	failed := <- beauty
+	failed := <-beauty
 
 	if failed {
 		t.Skip()

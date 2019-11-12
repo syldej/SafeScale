@@ -17,7 +17,6 @@
 package commands
 
 import (
-
 	//log "github.com/sirupsen/logrus"
 
 	"github.com/urfave/cli"
@@ -42,7 +41,7 @@ var ClusterProbeFeatureCommand = cli.Command{
 		if err != nil {
 			return err
 		}
-		return cli.NewExitError("Not yet implememted", int(ExitCode.NotImplemented))
+		return cli.NewExitError("Not yet implemented", int(ExitCode.NotImplemented))
 	},
 }
 
@@ -71,7 +70,7 @@ var ClusterAddFeatureCommand = cli.Command{
 		if err != nil {
 			return err
 		}
-		return cli.NewExitError("Not yet implememted", int(ExitCode.NotImplemented))
+		return cli.NewExitError("Not yet implemented", int(ExitCode.NotImplemented))
 	},
 }
 
@@ -91,7 +90,7 @@ var ClusterDeleteFeatureCommand = cli.Command{
 		if err != nil {
 			return err
 		}
-		return cli.NewExitError("Not yet implememted", int(ExitCode.NotImplemented))
+		return cli.NewExitError("Not yet implemented", int(ExitCode.NotImplemented))
 	},
 }
 
@@ -111,7 +110,7 @@ var ClusterStateFeatureCommand = cli.Command{
 		if err != nil {
 			return err
 		}
-		return cli.NewExitError("Not yet implememted", int(ExitCode.NotImplemented))
+		return cli.NewExitError("Not yet implemented", int(ExitCode.NotImplemented))
 	},
 }
 
@@ -126,7 +125,7 @@ var ClusterStartFeatureCommand = cli.Command{
 		if err != nil {
 			return err
 		}
-		return cli.NewExitError("Not yet implememted", int(ExitCode.NotImplemented))
+		return cli.NewExitError("Not yet implemented", int(ExitCode.NotImplemented))
 	},
 }
 
@@ -141,7 +140,7 @@ var ClusterStopFeatureCommand = cli.Command{
 		if err != nil {
 			return err
 		}
-		return cli.NewExitError("Not yet implememted", int(ExitCode.NotImplemented))
+		return cli.NewExitError("Not yet implemented", int(ExitCode.NotImplemented))
 	},
 }
 
@@ -156,7 +155,7 @@ var ClusterEnableFeatureCommand = cli.Command{
 		if err != nil {
 			return err
 		}
-		return cli.NewExitError("Not yet implememted", int(ExitCode.NotImplemented))
+		return cli.NewExitError("Not yet implemented", int(ExitCode.NotImplemented))
 	},
 }
 
@@ -174,6 +173,6 @@ var ClusterDisableFeatureCommand = cli.Command{
 			msg := "Invalid empty argument FEATURENAME"
 			return cli.NewExitError(msg, int(ExitCode.InvalidArgument))
 		}
-		return cli.NewExitError("Not yet implememted", int(ExitCode.NotImplemented))
+		return cli.NewExitError("Not yet implemented", int(ExitCode.NotImplemented))
 	},
 }

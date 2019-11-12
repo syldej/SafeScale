@@ -17,19 +17,17 @@
 package control
 
 import (
-	"fmt"
-	log "github.com/sirupsen/logrus"
-
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
-	"github.com/CS-SI/SafeScale/lib/utils"
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
 	"github.com/CS-SI/SafeScale/lib/utils/metadata"
 	"github.com/CS-SI/SafeScale/lib/utils/retry"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 	"github.com/CS-SI/SafeScale/lib/utils/serialize"
+	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 )
 
 const (
-	//Path is the path to use to reach Cluster Definitions/Metadata
+	// Path is the path to use to reach Cluster Definitions/Metadata
 	clusterFolderName = "clusters"
 )
 
@@ -42,8 +40,13 @@ type Metadata struct {
 
 // NewMetadata creates a new Cluster Controller metadata
 func NewMetadata(svc iaas.Service) (*Metadata, error) {
+	meta, err := metadata.NewItem(svc, clusterFolderName)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Metadata{
-		item: metadata.NewItem(svc, clusterFolderName),
+		item: meta,
 		// lock: &sync.Mutex{},
 	}, nil
 }
@@ -60,12 +63,23 @@ func (m *Metadata) Written() bool {
 
 // Carry links metadata with cluster struct
 func (m *Metadata) Carry(task concurrency.Task, cluster *Controller) *Metadata {
+	var err error
+	tracer := concurrency.NewTracer(task, "", false)
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	if m == nil {
+		err = scerr.InvalidInstanceError()
+		return m
+	}
 	if m.item == nil {
-		panic("m.item is nil!")
+		err = scerr.InvalidParameterError("m.item", "cannot be nil")
+		return m
 	}
 	if cluster == nil {
-		panic("Invalid parameter 'cluster': can't be nil!")
+		err = scerr.InvalidParameterError("cluster", "cannot be nil")
+		return m
 	}
+
 	m.item.Carry(cluster)
 	m.name = cluster.GetIdentity(task).Name
 	return m
@@ -73,9 +87,13 @@ func (m *Metadata) Carry(task concurrency.Task, cluster *Controller) *Metadata {
 
 // Delete removes a cluster metadata
 func (m *Metadata) Delete() error {
-	if m.item == nil {
-		panic("m.item is nil!")
+	if m == nil {
+		return scerr.InvalidInstanceError()
 	}
+	if m.item == nil {
+		return scerr.InvalidParameterError("m.item", "cannot be nil")
+	}
+
 	err := m.item.Delete(m.name)
 	if err != nil {
 		return err
@@ -89,19 +107,23 @@ func (m *Metadata) Read(task concurrency.Task, name string) error {
 	var (
 		ptr *Controller
 		ok  bool
+		err error
 	)
 	// If m.item is already carrying data, overwrites it
 	// Otherwise, allocates new one
 	anon := m.item.Get()
 	if anon == nil {
-		ptr = NewController(m.GetService())
+		ptr, err = NewController(m.GetService())
+		if err != nil {
+			return err
+		}
 	} else {
 		ptr, ok = anon.(*Controller)
 		if !ok {
 			ptr = &Controller{}
 		}
 	}
-	err := m.item.Read(name, func(buf []byte) (serialize.Serializable, error) {
+	err = m.item.Read(name, func(buf []byte) (serialize.Serializable, error) {
 		err := ptr.Deserialize(buf)
 		if err != nil {
 			return nil, err
@@ -123,8 +145,11 @@ func (m *Metadata) Write() error {
 // Reload reloads the metadata from ObjectStorage
 // It's a good idea to do that just after an Acquire() to be sure to have the latest data
 func (m *Metadata) Reload(task concurrency.Task) error {
+	if m == nil {
+		return scerr.InvalidInstanceError()
+	}
 	if m.item == nil {
-		panic("m.item is nil!")
+		return scerr.InvalidParameterError("m.item", "cannot be nil")
 	}
 
 	// If the metadata object has never been written yet, succeed doing nothing
@@ -133,55 +158,81 @@ func (m *Metadata) Reload(task concurrency.Task) error {
 	}
 
 	// Metadata had been written at least once, so try to reload (and propagate failure if it occurs)
-	var innerErr error
-	err := retry.WhileUnsuccessfulDelay1Second(
+	retryErr := retry.WhileUnsuccessfulDelay1Second(
 		func() error {
-			innerErr = m.Read(task, m.name)
+			innerErr := m.Read(task, m.name)
 			if innerErr != nil {
-				if _, ok := innerErr.(utils.ErrNotFound); ok {
-					return innerErr
+				if _, ok := innerErr.(scerr.ErrNotFound); ok {
+					return retry.StopRetryError("not found", innerErr)
 				}
+				return innerErr
 			}
 			return nil
 		},
-		utils.GetDefaultDelay(),
+		temporal.GetDefaultDelay(),
 	)
-	if err != nil {
-		if _, ok := err.(retry.ErrTimeout); ok && innerErr != nil {
-			if _, ok = innerErr.(utils.ErrNotFound); ok {
-				// On timeout and last error was NotFound, returns that last error
-				return innerErr
-			}
-			log.Debugf("timeout reading metadata of cluster '%s'", m.name)
-			return utils.NotFoundError(fmt.Sprintf("failed to reload metadata of cluster '%s'", m.name))
+	if retryErr != nil {
+		// If it's not a timeout is something we don't know how to handle yet
+		if _, ok := retryErr.(scerr.ErrTimeout); !ok {
+			return scerr.Cause(retryErr)
 		}
-		return err
+		return retryErr
 	}
 	return nil
 }
 
 // Get returns the content of the metadata
-func (m *Metadata) Get() *Controller {
+func (m *Metadata) Get() (_ *Controller, err error) {
+	tracer := concurrency.NewTracer(nil, "", false)
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	if m == nil {
+		return nil, scerr.InvalidInstanceError()
+	}
 	if m.item == nil {
-		panic("m.item is nil!")
+		return nil, scerr.InvalidParameterError("m.item", "cannot be nil")
 	}
 	if p, ok := m.item.Get().(*Controller); ok {
-		return p
+		return p, nil
 	}
-	panic("Missing cluster content in metadata!")
+	return nil, scerr.NotFoundError("missing cluster content in metadata")
+}
+
+// OK ...
+func (m *Metadata) OK() bool {
+	if m == nil {
+		return false
+	}
+
+	if m.item == nil {
+		return false
+	}
+
+	if _, ok := m.item.Get().(*Controller); ok {
+		return true
+	}
+
+	return false
 }
 
 // Browse walks through cluster folder and executes a callback for each entry
 func (m *Metadata) Browse(callback func(*Controller) error) error {
-	if m.item == nil {
-		panic("m.item is nil!")
+	if m == nil {
+		return scerr.InvalidInstanceError()
 	}
+	if m.item == nil {
+		return scerr.InvalidParameterError("m.item", "cannot be nil")
+	}
+
 	return m.item.Browse(func(buf []byte) error {
-		cc := NewController(m.GetService())
-		err := cc.Deserialize(buf)
+		cc, err := NewController(m.GetService())
+		if err == nil {
+			err = cc.Deserialize(buf)
+		}
 		if err != nil {
 			return err
 		}
+
 		return callback(cc)
 	})
 }

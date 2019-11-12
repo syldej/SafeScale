@@ -18,13 +18,16 @@ package gcp
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
+
+	"google.golang.org/api/compute/v1"
+
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/VolumeSpeed"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/VolumeState"
-	"github.com/CS-SI/SafeScale/lib/utils"
-	"google.golang.org/api/compute/v1"
-	"strconv"
-	"strings"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
+	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 )
 
 //-------------Volumes Management---------------------------------------------------------------------------------------
@@ -34,39 +37,43 @@ import (
 // - size is the size of the volume in GB
 // - volumeType is the type of volume to create, if volumeType is empty the driver use a default type
 func (s *Stack) CreateVolume(request resources.VolumeRequest) (*resources.Volume, error) {
-	selectedType := fmt.Sprintf("projects/%s/zones/%s/diskTypes/pd-standard", s.GcpConfig.ProjectId, s.GcpConfig.Zone)
+	if s == nil {
+		return nil, scerr.InvalidInstanceError()
+	}
+
+	selectedType := fmt.Sprintf("projects/%s/zones/%s/diskTypes/pd-standard", s.GcpConfig.ProjectID, s.GcpConfig.Zone)
 	if request.Speed == VolumeSpeed.SSD {
-		selectedType = fmt.Sprintf("projects/%s/zones/%s/diskTypes/pd-ssd", s.GcpConfig.ProjectId, s.GcpConfig.Zone)
+		selectedType = fmt.Sprintf("projects/%s/zones/%s/diskTypes/pd-ssd", s.GcpConfig.ProjectID, s.GcpConfig.Zone)
 	}
 
 	newDisk := &compute.Disk{
-		Name:                        request.Name,
-		Region:                      s.GcpConfig.Region,
-		SizeGb:                      int64(request.Size),
-		Type:                        selectedType,
-		Zone:                        s.GcpConfig.Zone,
+		Name:   request.Name,
+		Region: s.GcpConfig.Region,
+		SizeGb: int64(request.Size),
+		Type:   selectedType,
+		Zone:   s.GcpConfig.Zone,
 	}
 
 	service := s.ComputeService
 
-	op, err := s.ComputeService.Disks.Insert(s.GcpConfig.ProjectId, s.GcpConfig.Zone, newDisk).Do()
+	op, err := s.ComputeService.Disks.Insert(s.GcpConfig.ProjectID, s.GcpConfig.Zone, newDisk).Do()
 	if err != nil {
 		return nil, err
 	}
 
 	oco := OpContext{
-		Operation: op,
-		ProjectId: s.GcpConfig.ProjectId,
-		Service:   service,
+		Operation:    op,
+		ProjectID:    s.GcpConfig.ProjectID,
+		Service:      service,
 		DesiredState: "DONE",
 	}
 
-	err = waitUntilOperationIsSuccessfulOrTimeout(oco, utils.GetMinDelay(), utils.GetHostTimeout())
+	err = waitUntilOperationIsSuccessfulOrTimeout(oco, temporal.GetMinDelay(), temporal.GetHostTimeout())
 	if err != nil {
 		return nil, err
 	}
 
-	gcpDisk, err := s.ComputeService.Disks.Get(s.GcpConfig.ProjectId, s.GcpConfig.Zone, request.Name).Do()
+	gcpDisk, err := s.ComputeService.Disks.Get(s.GcpConfig.ProjectID, s.GcpConfig.Zone, request.Name).Do()
 	if err != nil {
 		return nil, err
 	}
@@ -80,19 +87,30 @@ func (s *Stack) CreateVolume(request resources.VolumeRequest) (*resources.Volume
 	}
 	nvol.Size = int(gcpDisk.SizeGb)
 	nvol.ID = strconv.FormatUint(gcpDisk.Id, 10)
-	nvol.State = volumeStateConvert(gcpDisk.Status)
+	nvol.State, err = volumeStateConvert(gcpDisk.Status)
+	if err != nil {
+		return nil, err
+	}
 
 	return nvol, nil
 }
 
 // GetVolume returns the volume identified by id
 func (s *Stack) GetVolume(ref string) (*resources.Volume, error) {
-	gcpDisk, err := s.ComputeService.Disks.Get(s.GcpConfig.ProjectId, s.GcpConfig.Zone, ref).Do()
+	if s == nil {
+		return nil, scerr.InvalidInstanceError()
+	}
+
+	gcpDisk, err := s.ComputeService.Disks.Get(s.GcpConfig.ProjectID, s.GcpConfig.Zone, ref).Do()
 	if err != nil {
 		return nil, err
 	}
 
 	nvol := resources.NewVolume()
+	nvol.State, err = volumeStateConvert(gcpDisk.Status)
+	if err != nil {
+		return nil, err
+	}
 	nvol.Name = gcpDisk.Name
 	if strings.Contains(gcpDisk.Type, "pd-ssd") {
 		nvol.Speed = VolumeSpeed.SSD
@@ -101,54 +119,55 @@ func (s *Stack) GetVolume(ref string) (*resources.Volume, error) {
 	}
 	nvol.Size = int(gcpDisk.SizeGb)
 	nvol.ID = strconv.FormatUint(gcpDisk.Id, 10)
-	nvol.State = volumeStateConvert(gcpDisk.Status)
 
 	return nvol, nil
 }
 
-func volumeStateConvert(gcpDriveStatus string) VolumeState.Enum {
+func volumeStateConvert(gcpDriveStatus string) (VolumeState.Enum, error) {
 	switch gcpDriveStatus {
 	case "CREATING":
-		return VolumeState.CREATING
+		return VolumeState.CREATING, nil
 	case "DELETING":
-		return VolumeState.DELETING
+		return VolumeState.DELETING, nil
 	case "FAILED":
-		return VolumeState.ERROR
+		return VolumeState.ERROR, nil
 	case "READY":
-		return VolumeState.AVAILABLE
+		return VolumeState.AVAILABLE, nil
 	case "RESTORING":
-		return VolumeState.CREATING
+		return VolumeState.CREATING, nil
 	default:
-		panic(fmt.Sprintf("Unexpected volume status: [%s]", gcpDriveStatus))
+		return -1, fmt.Errorf("Unexpected volume status: [%s]", gcpDriveStatus)
 	}
 }
 
-
 //ListVolumes return the list of all volume known on the current tenant
 func (s *Stack) ListVolumes() ([]resources.Volume, error) {
+	if s == nil {
+		return nil, scerr.InvalidInstanceError()
+	}
+
 	var volumes []resources.Volume
 
 	compuService := s.ComputeService
 
 	token := ""
 	for paginate := true; paginate; {
-		resp, err := compuService.Disks.List(s.GcpConfig.ProjectId, s.GcpConfig.Zone).PageToken(token).Do()
+		resp, err := compuService.Disks.List(s.GcpConfig.ProjectID, s.GcpConfig.Zone).PageToken(token).Do()
 		if err != nil {
 			return volumes, fmt.Errorf("cannot list volumes: %v", err)
-		} else {
-			for _, instance := range resp.Items {
-				nvolume := resources.NewVolume()
-				nvolume.ID = strconv.FormatUint(instance.Id, 10)
-				nvolume.Name = instance.Name
-				nvolume.Size = int(instance.SizeGb)
-				nvolume.State = volumeStateConvert(instance.Status)
-				if strings.Contains(instance.Type, "pd-ssd") {
-					nvolume.Speed = VolumeSpeed.SSD
-				} else {
-					nvolume.Speed = VolumeSpeed.HDD
-				}
-				volumes = append(volumes, *nvolume)
+		}
+		for _, instance := range resp.Items {
+			nvolume := resources.NewVolume()
+			nvolume.ID = strconv.FormatUint(instance.Id, 10)
+			nvolume.Name = instance.Name
+			nvolume.Size = int(instance.SizeGb)
+			nvolume.State, _ = volumeStateConvert(instance.Status)
+			if strings.Contains(instance.Type, "pd-ssd") {
+				nvolume.Speed = VolumeSpeed.SSD
+			} else {
+				nvolume.Speed = VolumeSpeed.HDD
 			}
+			volumes = append(volumes, *nvolume)
 		}
 		token := resp.NextPageToken
 		paginate = token != ""
@@ -159,20 +178,24 @@ func (s *Stack) ListVolumes() ([]resources.Volume, error) {
 
 // DeleteVolume deletes the volume identified by id
 func (s *Stack) DeleteVolume(ref string) error {
+	if s == nil {
+		return scerr.InvalidInstanceError()
+	}
+
 	service := s.ComputeService
-	op, err := s.ComputeService.Disks.Delete(s.GcpConfig.ProjectId, s.GcpConfig.Zone, ref).Do()
+	op, err := s.ComputeService.Disks.Delete(s.GcpConfig.ProjectID, s.GcpConfig.Zone, ref).Do()
 	if err != nil {
 		return err
 	}
 
 	oco := OpContext{
-		Operation: op,
-		ProjectId: s.GcpConfig.ProjectId,
-		Service:   service,
+		Operation:    op,
+		ProjectID:    s.GcpConfig.ProjectID,
+		Service:      service,
 		DesiredState: "DONE",
 	}
 
-	err = waitUntilOperationIsSuccessfulOrTimeout(oco, utils.GetMinDelay(), utils.GetHostTimeout())
+	err = waitUntilOperationIsSuccessfulOrTimeout(oco, temporal.GetMinDelay(), temporal.GetHostTimeout())
 	return err
 }
 
@@ -181,48 +204,56 @@ func (s *Stack) DeleteVolume(ref string) error {
 // - 'volume' to attach
 // - 'host' on which the volume is attached
 func (s *Stack) CreateVolumeAttachment(request resources.VolumeAttachmentRequest) (string, error) {
+	if s == nil {
+		return "", scerr.InvalidInstanceError()
+	}
+
 	service := s.ComputeService
 
-	gcpInstance, err := s.ComputeService.Instances.Get(s.GcpConfig.ProjectId, s.GcpConfig.Zone, request.HostID).Do()
+	gcpInstance, err := s.ComputeService.Instances.Get(s.GcpConfig.ProjectID, s.GcpConfig.Zone, request.HostID).Do()
 	if err != nil {
 		return "", err
 	}
 
-	gcpDisk, err := s.ComputeService.Disks.Get(s.GcpConfig.ProjectId, s.GcpConfig.Zone, request.VolumeID).Do()
+	gcpDisk, err := s.ComputeService.Disks.Get(s.GcpConfig.ProjectID, s.GcpConfig.Zone, request.VolumeID).Do()
 	if err != nil {
 		return "", err
 	}
 
 	cad := &compute.AttachedDisk{
-		DeviceName:        gcpDisk.Name,
-		Source:            gcpDisk.SelfLink,
+		DeviceName: gcpDisk.Name,
+		Source:     gcpDisk.SelfLink,
 	}
 
-	op, err := s.ComputeService.Instances.AttachDisk(s.GcpConfig.ProjectId, s.GcpConfig.Zone, gcpInstance.Name, cad).Do()
+	op, err := s.ComputeService.Instances.AttachDisk(s.GcpConfig.ProjectID, s.GcpConfig.Zone, gcpInstance.Name, cad).Do()
 	if err != nil {
 		return "", err
 	}
 
 	oco := OpContext{
-		Operation: op,
-		ProjectId: s.GcpConfig.ProjectId,
-		Service:   service,
+		Operation:    op,
+		ProjectID:    s.GcpConfig.ProjectID,
+		Service:      service,
 		DesiredState: "DONE",
 	}
 
-	err = waitUntilOperationIsSuccessfulOrTimeout(oco, utils.GetMinDelay(), utils.GetHostTimeout())
+	err = waitUntilOperationIsSuccessfulOrTimeout(oco, temporal.GetMinDelay(), temporal.GetHostTimeout())
 	if err != nil {
 		return "", err
 	}
 
-	return newGcpDiskAttachment(gcpInstance.Name, gcpDisk.Name).attachmentId, nil
+	return newGcpDiskAttachment(gcpInstance.Name, gcpDisk.Name).attachmentID, nil
 }
 
 // GetVolumeAttachment returns the volume attachment identified by id
 func (s *Stack) GetVolumeAttachment(serverID, id string) (*resources.VolumeAttachment, error) {
-	dat := NewGcpDiskAttachmentFromId(id)
+	if s == nil {
+		return nil, scerr.InvalidInstanceError()
+	}
 
-	gcpInstance, err := s.ComputeService.Instances.Get(s.GcpConfig.ProjectId, s.GcpConfig.Zone, dat.hostName).Do()
+	dat := newGcpDiskAttachmentFromID(id)
+
+	gcpInstance, err := s.ComputeService.Instances.Get(s.GcpConfig.ProjectID, s.GcpConfig.Zone, dat.hostName).Do()
 	if err != nil {
 		return nil, err
 	}
@@ -233,10 +264,10 @@ func (s *Stack) GetVolumeAttachment(serverID, id string) (*resources.VolumeAttac
 		if disk != nil {
 			if disk.DeviceName == favoriteSlave {
 				vat := &resources.VolumeAttachment{
-					ID:         id,
-					Name:       dat.diskName,
-					VolumeID:   dat.diskName,
-					ServerID:   dat.hostName,
+					ID:       id,
+					Name:     dat.diskName,
+					VolumeID: dat.diskName,
+					ServerID: dat.hostName,
 				}
 				return vat, nil
 			}
@@ -248,32 +279,36 @@ func (s *Stack) GetVolumeAttachment(serverID, id string) (*resources.VolumeAttac
 
 // DeleteVolumeAttachment ...
 func (s *Stack) DeleteVolumeAttachment(serverID, id string) error {
+	if s == nil {
+		return scerr.InvalidInstanceError()
+	}
+
 	service := s.ComputeService
 
-	gcpInstance, err := s.ComputeService.Instances.Get(s.GcpConfig.ProjectId, s.GcpConfig.Zone, serverID).Do()
+	gcpInstance, err := s.ComputeService.Instances.Get(s.GcpConfig.ProjectID, s.GcpConfig.Zone, serverID).Do()
 	if err != nil {
 		return err
 	}
 
-	diskName := NewGcpDiskAttachmentFromId(id).diskName
-	gcpDisk, err := s.ComputeService.Disks.Get(s.GcpConfig.ProjectId, s.GcpConfig.Zone, diskName).Do()
+	diskName := newGcpDiskAttachmentFromID(id).diskName
+	gcpDisk, err := s.ComputeService.Disks.Get(s.GcpConfig.ProjectID, s.GcpConfig.Zone, diskName).Do()
 	if err != nil {
 		return err
 	}
 
-	op, err := s.ComputeService.Instances.DetachDisk(s.GcpConfig.ProjectId, s.GcpConfig.Zone, gcpInstance.Name, gcpDisk.Name).Do()
+	op, err := s.ComputeService.Instances.DetachDisk(s.GcpConfig.ProjectID, s.GcpConfig.Zone, gcpInstance.Name, gcpDisk.Name).Do()
 	if err != nil {
 		return err
 	}
 
 	oco := OpContext{
-		Operation: op,
-		ProjectId: s.GcpConfig.ProjectId,
-		Service:   service,
+		Operation:    op,
+		ProjectID:    s.GcpConfig.ProjectID,
+		Service:      service,
 		DesiredState: "DONE",
 	}
 
-	err = waitUntilOperationIsSuccessfulOrTimeout(oco, utils.GetMinDelay(), utils.GetHostTimeout())
+	err = waitUntilOperationIsSuccessfulOrTimeout(oco, temporal.GetMinDelay(), temporal.GetHostTimeout())
 	if err != nil {
 		return err
 	}
@@ -283,9 +318,13 @@ func (s *Stack) DeleteVolumeAttachment(serverID, id string) error {
 
 // ListVolumeAttachments lists available volume attachment
 func (s *Stack) ListVolumeAttachments(serverID string) ([]resources.VolumeAttachment, error) {
+	if s == nil {
+		return nil, scerr.InvalidInstanceError()
+	}
+
 	var vats []resources.VolumeAttachment
 
-	gcpInstance, err := s.ComputeService.Instances.Get(s.GcpConfig.ProjectId, s.GcpConfig.Zone, serverID).Do()
+	gcpInstance, err := s.ComputeService.Instances.Get(s.GcpConfig.ProjectID, s.GcpConfig.Zone, serverID).Do()
 	if err != nil {
 		return nil, err
 	}
@@ -293,10 +332,10 @@ func (s *Stack) ListVolumeAttachments(serverID string) ([]resources.VolumeAttach
 	for _, disk := range gcpInstance.Disks {
 		if disk != nil {
 			vat := resources.VolumeAttachment{
-				ID:         newGcpDiskAttachment(gcpInstance.Name, disk.DeviceName).attachmentId,
-				Name:       disk.DeviceName,
-				VolumeID:   disk.DeviceName,
-				ServerID:   serverID,
+				ID:       newGcpDiskAttachment(gcpInstance.Name, disk.DeviceName).attachmentID,
+				Name:     disk.DeviceName,
+				VolumeID: disk.DeviceName,
+				ServerID: serverID,
 			}
 			vats = append(vats, vat)
 		}
@@ -306,20 +345,20 @@ func (s *Stack) ListVolumeAttachments(serverID string) ([]resources.VolumeAttach
 }
 
 type gcpDiskAttachment struct {
-	attachmentId string
-	hostName string
-	diskName string
+	attachmentID string
+	hostName     string
+	diskName     string
 }
 
 func newGcpDiskAttachment(hostName string, diskName string) *gcpDiskAttachment {
-	return &gcpDiskAttachment{hostName: hostName, diskName: diskName, attachmentId: fmt.Sprintf("%s---%s", hostName, diskName)}
+	return &gcpDiskAttachment{hostName: hostName, diskName: diskName, attachmentID: fmt.Sprintf("%s---%s", hostName, diskName)}
 }
 
-func NewGcpDiskAttachmentFromId(theId string) *gcpDiskAttachment {
+func newGcpDiskAttachmentFromID(theID string) *gcpDiskAttachment {
 	sep := "---"
-	if strings.Contains(theId, sep) {
-		host := strings.Split(theId, sep)[0]
-		drive := strings.Split(theId, sep)[1]
+	if strings.Contains(theID, sep) {
+		host := strings.Split(theID, sep)[0]
+		drive := strings.Split(theID, sep)[1]
 		return newGcpDiskAttachment(host, drive)
 	}
 	return nil

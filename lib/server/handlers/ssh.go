@@ -22,20 +22,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/CS-SI/SafeScale/lib/utils"
-
-	//"github.com/davecgh/go-spew/spew"
-	log "github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus"
 
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/HostProperty"
 	propsv1 "github.com/CS-SI/SafeScale/lib/server/iaas/resources/properties/v1"
 	"github.com/CS-SI/SafeScale/lib/server/metadata"
+	"github.com/CS-SI/SafeScale/lib/system"
+	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
 	"github.com/CS-SI/SafeScale/lib/utils/retry"
 	"github.com/CS-SI/SafeScale/lib/utils/retry/enums/Verdict"
-
-	"github.com/CS-SI/SafeScale/lib/system"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
+	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 )
 
 const protocolSeparator = ":"
@@ -65,36 +64,54 @@ func NewSSHHandler(svc iaas.Service) *SSHHandler {
 }
 
 // GetConfig creates SSHConfig to connect to an host
-func (handler *SSHHandler) GetConfig(ctx context.Context, hostParam interface{}) (*system.SSHConfig, error) {
-	host := resources.NewHost()
-
-	switch hostParam.(type) {
-	case string:
-		mh, err := metadata.LoadHost(handler.service, hostParam.(string))
-		if err != nil {
-			return nil, infraErr(err)
-		}
-		host = mh.Get()
-	case *resources.Host:
-		host = hostParam.(*resources.Host)
-	default:
-		panic("param must be a string or a *resources.Host!")
+func (handler *SSHHandler) GetConfig(ctx context.Context, hostParam interface{}) (sshConfig *system.SSHConfig, err error) {
+	if handler == nil {
+		return nil, scerr.InvalidInstanceError()
 	}
+
+	var hostRef string
+	host := resources.NewHost()
+	switch hostParam := hostParam.(type) {
+	case string:
+		hostRef = hostParam
+		mh, err := metadata.LoadHost(handler.service, hostRef)
+		if err != nil {
+			return nil, err
+		}
+		host, err = mh.Get()
+		if err != nil {
+			return nil, err
+		}
+	case *resources.Host:
+		host = hostParam
+		if host.Name != "" {
+			hostRef = host.Name
+		} else {
+			hostRef = host.ID
+		}
+	}
+	if host == nil {
+		return nil, scerr.InvalidParameterError("hostParam", "must be a not-empty string or a *resources.Host")
+	}
+
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("(%s)", hostRef), true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
 	cfg, err := handler.service.GetConfigurationOptions()
 	if err != nil {
-		return nil, infraErr(err)
+		return nil, err
 	}
 	user := resources.DefaultUser
 	if userIf, ok := cfg.Get("OperatorUsername"); ok {
 		user = userIf.(string)
 		if user == "" {
-			log.Warnf("OperatorUsername is empty ! Check your tenants.toml file ! Using 'safescale' user instead.")
+			logrus.Warnf("OperatorUsername is empty ! Check your tenants.toml file ! Using 'safescale' user instead.")
 			user = resources.DefaultUser
 		}
 	}
 
-	sshConfig := system.SSHConfig{
+	sshConfig = &system.SSHConfig{
 		PrivateKey: host.PrivateKey,
 		Port:       22,
 		Host:       host.GetAccessIP(),
@@ -107,7 +124,7 @@ func (handler *SSHHandler) GetConfig(ctx context.Context, hostParam interface{})
 			hostSvc := NewHostHandler(handler.service)
 			gw, err := hostSvc.Inspect(ctx, hostNetworkV1.DefaultGatewayID)
 			if err != nil {
-				return throwErr(err)
+				return err
 			}
 			GatewayConfig := system.SSHConfig{
 				PrivateKey: gw.PrivateKey,
@@ -125,54 +142,67 @@ func (handler *SSHHandler) GetConfig(ctx context.Context, hostParam interface{})
 
 	sshConfig.Host = host.GetAccessIP()
 
-	return &sshConfig, nil
+	return sshConfig, nil
 }
 
 // WaitServerReady waits for remote SSH server to be ready. After timeout, fails
-func (handler *SSHHandler) WaitServerReady(ctx context.Context, hostParam interface{}, timeout time.Duration) error {
-	var err error
+func (handler *SSHHandler) WaitServerReady(ctx context.Context, hostParam interface{}, timeout time.Duration) (err error) {
+	if handler == nil {
+		return scerr.InvalidInstanceError()
+	}
+	// FIXME: validate parameters
+
+	tracer := concurrency.NewTracer(nil, "", true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
 	sshSvc := NewSSHHandler(handler.service)
 	ssh, err := sshSvc.GetConfig(ctx, hostParam)
 	if err != nil {
-		return logicErrf(err, "Failed to read SSH config")
+		return err
 	}
 	_, waitErr := ssh.WaitServerReady("ready", timeout)
-	return infraErr(waitErr)
+	return waitErr
 }
 
 // Run tries to execute command 'cmd' on the host
-func (handler *SSHHandler) Run(ctx context.Context, hostName, cmd string) (int, string, string, error) {
-	var stdOut, stdErr string
-	var retCode int
-	var err error
+func (handler *SSHHandler) Run(ctx context.Context, hostName, cmd string) (retCode int, stdOut string, stdErr string, err error) {
+	if handler == nil {
+		return -1, "", "", scerr.InvalidInstanceError()
+	}
+	// FIXME: validate parameters
+
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s', <command>)", hostName), true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+	tracer.Trace(fmt.Sprintf("<command>=[%s]", cmd))
 
 	hostSvc := NewHostHandler(handler.service)
 	host, err := hostSvc.ForceInspect(ctx, hostName)
 	if err != nil {
-		return 0, "", "", throwErr(err)
+		return 0, "", "", err
 	}
 
 	// retrieve ssh config to perform some commands
 	ssh, err := handler.GetConfig(ctx, host)
 	if err != nil {
-		return 0, "", "", infraErr(err)
+		return 0, "", "", err
 	}
 
-	err = retry.WhileUnsuccessfulDelay1SecondWithNotify(
+	retryErr := retry.WhileUnsuccessfulDelay1SecondWithNotify(
 		func() error {
-			// retCode, stdOut, stdErr, err = handler.run(ssh, cmd) // FIXME It CAN lock
-			retCode, stdOut, stdErr, err = handler.runWithTimeout(ssh, cmd, utils.GetHostTimeout())
+			retCode, stdOut, stdErr, err = handler.runWithTimeout(ssh, cmd, temporal.GetHostTimeout())
 			return err
 		},
-		utils.GetHostTimeout(),
+		temporal.GetHostTimeout(),
 		func(t retry.Try, v Verdict.Enum) {
 			if v == Verdict.Retry {
-				log.Debugf("Remote SSH service on host '%s' isn't ready, retrying...\n", hostName)
+				logrus.Debugf("Remote SSH service on host '%s' isn't ready, retrying...\n", hostName)
 			}
 		},
 	)
-	if err != nil {
-		err = infraErr(err)
+	if retryErr != nil {
+		return retCode, stdOut, stdErr, retryErr
 	}
 
 	return retCode, stdOut, stdErr, err
@@ -185,7 +215,7 @@ func (handler *SSHHandler) run(ssh *system.SSHConfig, cmd string) (int, string, 
 	if err != nil {
 		return 0, "", "", err
 	}
-	return sshCmd.Run() // FIXME It CAN lock
+	return sshCmd.Run(nil) // FIXME It CAN lock, use RunWithTimeout instead
 }
 
 // run executes command on the host
@@ -195,7 +225,7 @@ func (handler *SSHHandler) runWithTimeout(ssh *system.SSHConfig, cmd string, dur
 	if err != nil {
 		return 0, "", "", err
 	}
-	return sshCmd.RunWithTimeout(duration)
+	return sshCmd.RunWithTimeout(nil, duration)
 }
 
 func extracthostName(in string) (string, error) {
@@ -226,7 +256,6 @@ func extractPath(in string) (string, error) {
 	}
 	_, err := extracthostName(in)
 	if err != nil {
-		err = infraErr(err)
 		return "", err
 	}
 
@@ -234,38 +263,43 @@ func extractPath(in string) (string, error) {
 }
 
 // Copy copy file/directory
-func (handler *SSHHandler) Copy(ctx context.Context, from, to string) (int, string, string, error) {
+func (handler *SSHHandler) Copy(ctx context.Context, from, to string) (retCode int, stdOut string, stdErr string, err error) {
+	if handler == nil {
+		return -1, "", "", scerr.InvalidInstanceError()
+	}
+	// FIXME: validate parameters
+
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s', '%s')", from, to), true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
 	hostName := ""
 	var upload bool
 	var localPath, remotePath string
 	// Try extract host
 	hostFrom, err := extracthostName(from)
 	if err != nil {
-		err = infraErr(err)
 		return 0, "", "", err
 	}
 	hostTo, err := extracthostName(to)
 	if err != nil {
-		err = infraErr(err)
 		return 0, "", "", err
 	}
 
 	// Host checks
 	if hostFrom != "" && hostTo != "" {
-		return 0, "", "", logicErr(fmt.Errorf("copy between 2 hosts is not supported yet"))
+		return 0, "", "", fmt.Errorf("copy between 2 hosts is not supported yet")
 	}
 	if hostFrom == "" && hostTo == "" {
-		return 0, "", "", logicErr(fmt.Errorf("no host name specified neither in from nor to"))
+		return 0, "", "", fmt.Errorf("no host name specified neither in from nor to")
 	}
 
 	fromPath, err := extractPath(from)
 	if err != nil {
-		err = infraErr(err)
 		return 0, "", "", err
 	}
 	toPath, err := extractPath(to)
 	if err != nil {
-		err = infraErr(err)
 		return 0, "", "", err
 	}
 
@@ -284,16 +318,15 @@ func (handler *SSHHandler) Copy(ctx context.Context, from, to string) (int, stri
 	hostSvc := NewHostHandler(handler.service)
 	host, err := hostSvc.ForceInspect(ctx, hostName)
 	if err != nil {
-		return 0, "", "", throwErr(err)
+		return 0, "", "", err
 	}
 
 	// retrieve ssh config to perform some commands
 	ssh, err := handler.GetConfig(ctx, host.ID)
 	if err != nil {
-		err = infraErr(err)
 		return 0, "", "", err
 	}
 
 	cRc, cStcOut, cStdErr, cErr := ssh.Copy(remotePath, localPath, upload)
-	return cRc, cStcOut, cStdErr, infraErr(cErr)
+	return cRc, cStcOut, cStdErr, cErr
 }

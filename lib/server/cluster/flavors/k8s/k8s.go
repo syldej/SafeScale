@@ -24,7 +24,7 @@ import (
 	txttmpl "text/template"
 
 	rice "github.com/GeertJohan/go.rice"
-	log "github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus"
 
 	pb "github.com/CS-SI/SafeScale/lib"
 	"github.com/CS-SI/SafeScale/lib/server/cluster/control"
@@ -106,25 +106,28 @@ func defaultImage(task concurrency.Task, foreman control.Foreman) string {
 
 func configureCluster(task concurrency.Task, foreman control.Foreman) error {
 	clusterName := foreman.Cluster().GetIdentity(task).Name
-	log.Println(fmt.Sprintf("[cluster %s] adding feature 'kubernetes'...", clusterName))
+	logrus.Println(fmt.Sprintf("[cluster %s] adding feature 'kubernetes'...", clusterName))
 
-	target := install.NewClusterTarget(task, foreman.Cluster())
+	target, err := install.NewClusterTarget(task, foreman.Cluster())
+	if err != nil {
+		return err
+	}
 	feature, err := install.NewFeature(task, "kubernetes")
 	if err != nil {
-		log.Errorf("[cluster %s] failed to instanciate feature 'kubernetes': %v", clusterName, err)
+		logrus.Errorf("[cluster %s] failed to instanciate feature 'kubernetes': %v", clusterName, err)
 		return fmt.Errorf("failed to prepare feature 'kubernetes': %s", err.Error())
 	}
 	results, err := feature.Add(target, install.Variables{}, install.Settings{})
 	if err != nil {
-		log.Errorf("[cluster %s] failed to add feature 'kubernetes': %s", clusterName, err.Error())
+		logrus.Errorf("[cluster %s] failed to add feature 'kubernetes': %s", clusterName, err.Error())
 		return err
 	}
 	if !results.Successful() {
 		err = fmt.Errorf(results.AllErrorMessages())
-		log.Errorf("[cluster %s] failed to add feature 'kubernetes': %s", clusterName, err.Error())
+		logrus.Errorf("[cluster %s] failed to add feature 'kubernetes': %s", clusterName, err.Error())
 		return err
 	}
-	log.Println(fmt.Sprintf("[cluster %s] feature 'kubernetes' addition successful.", clusterName))
+	logrus.Println(fmt.Sprintf("[cluster %s] feature 'kubernetes' addition successful.", clusterName))
 	return nil
 }
 
@@ -165,6 +168,13 @@ func getGlobalSystemRequirements(task concurrency.Task, foreman control.Foreman)
 			return "", err
 		}
 
+		// We will need information from cluster network
+		cluster := foreman.Cluster()
+		netCfg, err := cluster.GetNetworkConfig(task)
+		if err != nil {
+			return "", err
+		}
+
 		// get file contents as string
 		tmplString, err := box.String("k8s_install_requirements.sh")
 		if err != nil {
@@ -177,10 +187,9 @@ func getGlobalSystemRequirements(task concurrency.Task, foreman control.Foreman)
 			return "", fmt.Errorf("error parsing script template: %s", err.Error())
 		}
 		dataBuffer := bytes.NewBufferString("")
-		cluster := foreman.Cluster()
 		identity := cluster.GetIdentity(task)
 		err = tmplPrepared.Execute(dataBuffer, map[string]interface{}{
-			"CIDR":          cluster.GetNetworkConfig(task).CIDR,
+			"CIDR":          netCfg.CIDR,
 			"Username":      "cladm",
 			"CladmPassword": identity.AdminPassword,
 			"SSHPublicKey":  identity.Keypair.PublicKey,

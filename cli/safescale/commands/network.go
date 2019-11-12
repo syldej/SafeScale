@@ -17,13 +17,19 @@
 package commands
 
 import (
+	"encoding/json"
+
+	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli"
 
 	pb "github.com/CS-SI/SafeScale/lib"
 	"github.com/CS-SI/SafeScale/lib/client"
 	"github.com/CS-SI/SafeScale/lib/utils"
 	clitools "github.com/CS-SI/SafeScale/lib/utils/cli"
+	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 )
+
+var networkCmdName = "network"
 
 // NetworkCmd command
 var NetworkCmd = cli.Command{
@@ -47,7 +53,8 @@ var networkList = cli.Command{
 			Usage: "List all Networks on tenant (not only those created by SafeScale)",
 		}},
 	Action: func(c *cli.Context) error {
-		networks, err := client.New().Network.List(c.Bool("all"), client.DefaultExecutionTimeout)
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", networkCmdName, c.Command.Name, c.Args())
+		networks, err := client.New().Network.List(c.Bool("all"), temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "list of networks", false).Error())))
 		}
@@ -61,6 +68,7 @@ var networkDelete = cli.Command{
 	Usage:     "delete Network",
 	ArgsUsage: "<Network_name> [<Network_name>...]",
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", networkCmdName, c.Command.Name, c.Args())
 		if c.NArg() < 1 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Network_name>."))
@@ -70,7 +78,7 @@ var networkDelete = cli.Command{
 		networkList = append(networkList, c.Args().First())
 		networkList = append(networkList, c.Args().Tail()...)
 
-		err := client.New().Network.Delete(networkList, client.DefaultExecutionTimeout)
+		err := client.New().Network.Delete(networkList, temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "deletion of network", false).Error())))
 		}
@@ -84,16 +92,48 @@ var networkInspect = cli.Command{
 	Usage:     "inspect NETWORK",
 	ArgsUsage: "<network_name>",
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", networkCmdName, c.Command.Name, c.Args())
 		if c.NArg() != 1 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <network_name>."))
 		}
 
-		network, err := client.New().Network.Inspect(c.Args().First(), client.DefaultExecutionTimeout)
+		network, err := client.New().Network.Inspect(c.Args().First(), temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "inspection of network", false).Error())))
 		}
-		return clitools.SuccessResponse(network)
+
+		// Convert struct to map using struct to json then json to map
+		// errors not checked willingly; json encoding and decoding of simple structs are not supposed to fail
+		mapped := map[string]interface{}{}
+		jsoned, _ := json.Marshal(network)
+		_ = json.Unmarshal(jsoned, &mapped)
+
+		// Get gateway(s) information (needs the name(s) in the output map)
+		var pgw, sgw *pb.Host
+		pgwID := network.GetGatewayId()
+		sgwID := network.GetSecondaryGatewayId()
+		pgw, err = client.New().Host.Inspect(pgwID, temporal.GetExecutionTimeout())
+		if err == nil {
+			mapped["gateway_name"] = pgw.Name
+		} else {
+			mapped["gateway_name"] = "<unknown>"
+		}
+		mapped["gateway_name"] = pgw.Name
+		if network.GetSecondaryGatewayId() != "" {
+			sgw, err = client.New().Host.Inspect(sgwID, temporal.GetExecutionTimeout())
+			if err == nil {
+				mapped["secondary_gateway_name"] = sgw.Name
+			} else {
+				mapped["secondary_gateway_name"] = "<unknown>"
+			}
+		}
+		// Removed entry virtual_ip if empty
+		if len(mapped["virtual_ip"].(map[string]interface{})) == 0 {
+			delete(mapped, "virtual_ip")
+		}
+
+		return clitools.SuccessResponse(mapped)
 	},
 }
 
@@ -117,6 +157,10 @@ var networkCreate = cli.Command{
 			Name:  "gwname",
 			Value: "",
 			Usage: "Name for the gateway. Default to 'gw-<network_name>'",
+		},
+		cli.BoolFlag{
+			Name:  "failover",
+			Usage: "creates 2 gateways for the network with a VIP used a internal default route",
 		},
 		cli.StringFlag{
 			Name: "S, sizing",
@@ -155,6 +199,7 @@ var networkCreate = cli.Command{
 		},
 	},
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", networkCmdName, c.Command.Name, c.Args())
 		if c.NArg() != 1 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <network_name>."))
@@ -165,19 +210,16 @@ var networkCreate = cli.Command{
 			return err
 		}
 		netdef := pb.NetworkDefinition{
-			Cidr: c.String("cidr"),
-			Name: c.Args().Get(0),
+			Cidr:     c.String("cidr"),
+			Name:     c.Args().Get(0),
+			FailOver: c.Bool("failover"),
 			Gateway: &pb.GatewayDefinition{
-				// Cpu:  int32(c.Int("cpu")),
-				// Disk: int32(c.Int("disk")),
-				// Ram:  float32(c.Float64("ram")),
-				// CpuFreq: ??,
 				ImageId: c.String("os"),
 				Name:    c.String("gwname"),
 				Sizing:  def.Sizing,
 			},
 		}
-		network, err := client.New().Network.Create(netdef, client.DefaultExecutionTimeout)
+		network, err := client.New().Network.Create(netdef, temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "creation of network", true).Error())))
 		}

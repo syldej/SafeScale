@@ -19,15 +19,19 @@ package commands
 import (
 	"fmt"
 
+	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli"
 
 	pb "github.com/CS-SI/SafeScale/lib"
 	"github.com/CS-SI/SafeScale/lib/client"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
-	safescaleutils "github.com/CS-SI/SafeScale/lib/server/utils"
+	srvutils "github.com/CS-SI/SafeScale/lib/server/utils"
 	"github.com/CS-SI/SafeScale/lib/utils"
 	clitools "github.com/CS-SI/SafeScale/lib/utils/cli"
+	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 )
+
+var volumeCmdName = "volume"
 
 //VolumeCmd volume command
 var VolumeCmd = cli.Command{
@@ -53,7 +57,8 @@ var volumeList = cli.Command{
 			Usage: "List all Volumes on tenant (not only those created by SafeScale)",
 		}},
 	Action: func(c *cli.Context) error {
-		volumes, err := client.New().Volume.List(c.Bool("all"), client.DefaultExecutionTimeout)
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", volumeCmdName, c.Command.Name, c.Args())
+		volumes, err := client.New().Volume.List(c.Bool("all"), temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "list of volumes", false).Error())))
 		}
@@ -67,12 +72,13 @@ var volumeInspect = cli.Command{
 	Usage:     "Inspect volume",
 	ArgsUsage: "<Volume_name|Volume_ID>",
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", volumeCmdName, c.Command.Name, c.Args())
 		if c.NArg() != 1 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Volume_name|Volume_ID>."))
 		}
 
-		volumeInfo, err := client.New().Volume.Inspect(c.Args().First(), client.DefaultExecutionTimeout)
+		volumeInfo, err := client.New().Volume.Inspect(c.Args().First(), temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "inspection of volume", false).Error())))
 		}
@@ -86,6 +92,7 @@ var volumeDelete = cli.Command{
 	Usage:     "Delete volume",
 	ArgsUsage: "<Volume_name|Volume_ID> [<Volume_name|Volume_ID>...]",
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", volumeCmdName, c.Command.Name, c.Args())
 		if c.NArg() < 1 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Volume_name|Volume_ID>."))
@@ -95,7 +102,7 @@ var volumeDelete = cli.Command{
 		volumeList = append(volumeList, c.Args().First())
 		volumeList = append(volumeList, c.Args().Tail()...)
 
-		err := client.New().Volume.Delete(volumeList, client.DefaultExecutionTimeout)
+		err := client.New().Volume.Delete(volumeList, temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "deletion of volume", false).Error())))
 		}
@@ -121,6 +128,7 @@ var volumeCreate = cli.Command{
 		},
 	},
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", volumeCmdName, c.Command.Name, c.Args())
 		if c.NArg() != 1 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Volume_name>. "))
@@ -141,7 +149,7 @@ var volumeCreate = cli.Command{
 			Speed: pb.VolumeSpeed(volSpeed),
 		}
 
-		volume, err := client.New().Volume.Create(def, client.DefaultExecutionTimeout)
+		volume, err := client.New().Volume.Create(def, temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "creation of volume", true).Error())))
 		}
@@ -166,10 +174,11 @@ var volumeAttach = cli.Command{
 		},
 		cli.BoolFlag{
 			Name:  "do-not-format",
-			Usage: "Prevent the volume to be formated (the previous format of the disk will be kept, beware that a new volume has no format before his first attachment and so can't be attach with this option)",
+			Usage: "Prevent the volume to be formated (the previous format of the disk will be kept, beware that a new volume has no format before his first attachment and so cannot be attach with this option)",
 		},
 	},
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", volumeCmdName, c.Command.Name, c.Args())
 		if c.NArg() != 2 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Volume_name> and/or <Host_name>."))
@@ -181,7 +190,7 @@ var volumeAttach = cli.Command{
 			Host:        &pb.Reference{Name: c.Args().Get(1)},
 			Volume:      &pb.Reference{Name: c.Args().Get(0)},
 		}
-		err := client.New().Volume.Attach(def, client.DefaultExecutionTimeout)
+		err := client.New().Volume.Attach(def, temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "attach of volume", true).Error())))
 		}
@@ -194,12 +203,13 @@ var volumeDetach = cli.Command{
 	Usage:     "Detach a volume from an host",
 	ArgsUsage: "<Volume_name|Volume_ID> <Host_name|Host_ID>",
 	Action: func(c *cli.Context) error {
+		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", volumeCmdName, c.Command.Name, c.Args())
 		if c.NArg() != 2 {
 			_ = cli.ShowSubcommandHelp(c)
 			return clitools.FailureResponse(clitools.ExitOnInvalidArgument("Missing mandatory argument <Volume_name> and/or <Host_name>."))
 		}
 
-		err := client.New().Volume.Detach(c.Args().Get(0), c.Args().Get(1), client.DefaultExecutionTimeout)
+		err := client.New().Volume.Detach(c.Args().Get(0), c.Args().Get(1), temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "unattach of volume", true).Error())))
 		}
@@ -231,7 +241,7 @@ func toDisplaybleVolumeInfo(volumeInfo *pb.VolumeInfo) *volumeInfoDisplayable {
 		volumeInfo.GetName(),
 		pb.VolumeSpeed_name[int32(volumeInfo.GetSpeed())],
 		volumeInfo.GetSize(),
-		safescaleutils.GetReference(volumeInfo.GetHost()),
+		srvutils.GetReference(volumeInfo.GetHost()),
 		volumeInfo.GetMountPath(),
 		volumeInfo.GetFormat(),
 		volumeInfo.GetDevice(),

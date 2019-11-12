@@ -18,9 +18,12 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
+	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 )
 
 //go:generate mockgen -destination=../mocks/mock_templateapi.go -package=mocks github.com/CS-SI/SafeScale/lib/server/handlers TemplateAPI
@@ -45,7 +48,11 @@ func NewTemplateHandler(svc iaas.Service) TemplateAPI {
 }
 
 // List returns the template list
-func (handler *TemplateHandler) List(ctx context.Context, all bool) ([]resources.HostTemplate, error) {
-	tlist, err := handler.service.ListTemplates(all)
-	return tlist, infraErr(err)
+func (handler *TemplateHandler) List(ctx context.Context, all bool) (tlist []resources.HostTemplate, err error) {
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("(%v)", all), true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	tlist, err = handler.service.ListTemplates(all)
+	return tlist, err
 }

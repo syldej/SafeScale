@@ -64,14 +64,14 @@ func GetTenants() ([]interface{}, error) {
 	return tenants, err
 }
 
-//UseStorages return the storageService build around storages referenced in tenantNames
+// UseStorages return the storageService build around storages referenced in tenantNames
 func UseStorages(tenantNames []string) (*StorageServices, error) {
 	storageServices := NewStorageService()
 
 	for _, tenantName := range tenantNames {
 		err := storageServices.RegisterStorage(tenantName)
 		if err != nil {
-			return nil, fmt.Errorf("Failed to register storage tenant %s : %s", tenantName, err.Error())
+			return nil, fmt.Errorf("failed to register storage tenant %s : %s", tenantName, err.Error())
 		}
 	}
 
@@ -118,34 +118,46 @@ func UseService(tenantName string) (Service, error) {
 		svcProvider = provider
 		svc, found = allProviders[provider]
 		if !found {
-			log.Errorf("Failed to find client '%s' for tenant '%s'", svcProvider, name)
+			log.Errorf("failed to find client '%s' for tenant '%s'", svcProvider, name)
 			continue
 		}
 
-		tenantIdentity, found := tenant["identity"].(map[string]interface{})
+		// tenantIdentity, found := tenant["identity"].(map[string]interface{})
+		// if !found {
+		// 	log.Debugf("No section 'identity' found in tenant '%s', continuing.", name)
+		// }
+		// tenantCompute, found := tenant["compute"].(map[string]interface{})
+		// if !found {
+		// 	log.Debugf("No section 'compute' found in tenant '%s', continuing.", name)
+		// }
+		// tenantNetwork, found := tenant["network"].(map[string]interface{})
+		// if !found {
+		// 	log.Debugf("No section 'network' found in tenant '%s', continuing.", name)
+		// }
+		_, found = tenant["identity"].(map[string]interface{})
 		if !found {
 			log.Debugf("No section 'identity' found in tenant '%s', continuing.", name)
 		}
-		tenantCompute, found := tenant["compute"].(map[string]interface{})
+		_, found = tenant["compute"].(map[string]interface{})
 		if !found {
 			log.Debugf("No section 'compute' found in tenant '%s', continuing.", name)
 		}
-		tenantNetwork, found := tenant["network"].(map[string]interface{})
+		_, found = tenant["network"].(map[string]interface{})
 		if !found {
 			log.Debugf("No section 'network' found in tenant '%s', continuing.", name)
 		}
-		tenantClient := map[string]interface{}{
-			"identity": tenantIdentity,
-			"compute":  tenantCompute,
-			"network":  tenantNetwork,
-		}
+		// tenantClient := map[string]interface{}{
+		// 	"identity": tenantIdentity,
+		// 	"compute":  tenantCompute,
+		// 	"network":  tenantNetwork,
+		// }
 		_, tenantObjectStorageFound := tenant["objectstorage"]
 		_, tenantMetadataFound := tenant["metadata"]
 
 		// Initializes Provider
-		providerInstance, err := svc.Build(tenantClient)
+		providerInstance, err := svc.Build( /*tenantClient*/ tenant)
 		if err != nil {
-			return nil, fmt.Errorf("Error creating tenant '%s' on provider '%s': %s", tenantName, provider, err.Error())
+			return nil, fmt.Errorf("error creating tenant '%s' on provider '%s': %s", tenantName, provider, err.Error())
 		}
 		serviceCfg, err := providerInstance.GetConfigurationOptions()
 		if err != nil {
@@ -161,7 +173,7 @@ func UseService(tenantName string) (Service, error) {
 			}
 			objectStorageLocation, err = objectstorage.NewLocation(objectStorageConfig)
 			if err != nil {
-				return nil, fmt.Errorf("Error connecting to Object Storage Location: %s", err.Error())
+				return nil, fmt.Errorf("error connecting to Object Storage Location: %s", err.Error())
 			}
 		} else {
 			log.Warnf("missing section 'objectstorage' in configuration file for tenant '%s'", tenantName)
@@ -203,7 +215,11 @@ func UseService(tenantName string) (Service, error) {
 				}
 			}
 			if metadataConfig, ok := tenant["metadata"].(map[string]interface{}); ok {
-				metadataCryptKey = crypt.NewEncryptionKey([]byte(metadataConfig["CryptKey"].(string)))
+				ek, err := crypt.NewEncryptionKey([]byte(metadataConfig["CryptKey"].(string)))
+				if err != nil {
+					return nil, err
+				}
+				metadataCryptKey = ek
 			}
 		} else {
 			return nil, fmt.Errorf("failed to build service: 'metadata' section (and 'objectstorage' as fallback) is missing in configuration file for tenant '%s'", tenantName)
@@ -216,11 +232,11 @@ func UseService(tenantName string) (Service, error) {
 			metadataBucket: metadataBucket,
 			metadataKey:    metadataCryptKey,
 		}
-		return newS, validateRegexps(newS, tenantClient)
+		return newS, validateRegexps(newS /*tenantClient*/, tenant)
 	}
 
 	if !tenantInCfg {
-		return nil, fmt.Errorf("Tenant '%s' not found in configuration", tenantName)
+		return nil, fmt.Errorf("tenant '%s' not found in configuration", tenantName)
 	}
 	return nil, resources.ResourceNotFoundError("provider builder for", svcProvider)
 }
@@ -339,21 +355,21 @@ func initObjectStorageLocationConfig(tenant map[string]interface{}) (objectstora
 		config.AvailabilityZone, _ = compute["AvailabilityZone"].(string)
 	}
 
+	// FIXME Remove google custom code
 	if config.Type == "google" {
-		if config.ProjectId, ok = identity["project_id"].(string); !ok {
-			return config, fmt.Errorf("Problem parsing project_id")
+		if config.ProjectID, ok = identity["project_id"].(string); !ok {
+			return config, fmt.Errorf("problem parsing project_id")
 		}
 
-		// FIXME Add google stuff
 		googleCfg := stacks.GCPConfiguration{
 			Type:         "service_account",
-			ProjectId:    identity["project_id"].(string),
-			PrivateKeyId: identity["private_key_id"].(string),
+			ProjectID:    identity["project_id"].(string),
+			PrivateKeyID: identity["private_key_id"].(string),
 			PrivateKey:   identity["private_key"].(string),
 			ClientEmail:  identity["client_email"].(string),
-			ClientId:     identity["client_id"].(string),
-			AuthUri:      identity["auth_uri"].(string),
-			TokenUri:     identity["token_uri"].(string),
+			ClientID:     identity["client_id"].(string),
+			AuthURI:      identity["auth_uri"].(string),
+			TokenURI:     identity["token_uri"].(string),
 			AuthProvider: identity["auth_provider_x509_cert_url"].(string),
 			ClientCert:   identity["client_x509_cert_url"].(string),
 		}
@@ -363,7 +379,6 @@ func initObjectStorageLocationConfig(tenant map[string]interface{}) (objectstora
 			return config, err
 		}
 
-		// FIXME Here is the problem with google stuff...
 		config.Credentials = string(d1)
 	}
 	return config, nil
@@ -488,21 +503,21 @@ func initMetadataLocationConfig(tenant map[string]interface{}) (objectstorage.Co
 		}
 	}
 
+	// FIXME Remove google custom code
 	if config.Type == "google" {
-		if config.ProjectId, ok = identity["project_id"].(string); !ok {
-			return config, fmt.Errorf("Problem parsing project_id")
+		if config.ProjectID, ok = identity["project_id"].(string); !ok {
+			return config, fmt.Errorf("problem parsing project_id")
 		}
 
-		// FIXME Add google stuff
 		googleCfg := stacks.GCPConfiguration{
 			Type:         "service_account",
-			ProjectId:    identity["project_id"].(string),
-			PrivateKeyId: identity["private_key_id"].(string),
+			ProjectID:    identity["project_id"].(string),
+			PrivateKeyID: identity["private_key_id"].(string),
 			PrivateKey:   identity["private_key"].(string),
 			ClientEmail:  identity["client_email"].(string),
-			ClientId:     identity["client_id"].(string),
-			AuthUri:      identity["auth_uri"].(string),
-			TokenUri:     identity["token_uri"].(string),
+			ClientID:     identity["client_id"].(string),
+			AuthURI:      identity["auth_uri"].(string),
+			TokenURI:     identity["token_uri"].(string),
 			AuthProvider: identity["auth_provider_x509_cert_url"].(string),
 			ClientCert:   identity["client_x509_cert_url"].(string),
 		}
@@ -512,7 +527,6 @@ func initMetadataLocationConfig(tenant map[string]interface{}) (objectstorage.Co
 			return config, err
 		}
 
-		// FIXME Here is the problem with google stuff...
 		config.Credentials = string(d1)
 	}
 
@@ -530,10 +544,10 @@ func loadConfig() error {
 			if provider, ok := tenant["client"].(string); ok {
 				allTenants[name] = provider
 			} else {
-				return fmt.Errorf("Invalid configuration file '%s'. Tenant '%s' has no client type", v.ConfigFileUsed(), name)
+				return fmt.Errorf("invalid configuration file '%s'. Tenant '%s' has no client type", v.ConfigFileUsed(), name)
 			}
 		} else {
-			return fmt.Errorf("Invalid configuration file. A tenant has no 'name' entry in '%s'", v.ConfigFileUsed())
+			return fmt.Errorf("invalid configuration file. A tenant has no 'name' entry in '%s'", v.ConfigFileUsed())
 		}
 	}
 	return nil
@@ -550,7 +564,7 @@ func getTenantsFromCfg() ([]interface{}, error) {
 	v.SetConfigName("tenants")
 
 	if err := v.ReadInConfig(); err != nil { // Handle errors reading the config file
-		msg := fmt.Sprintf("Error reading configuration file: %s", err.Error())
+		msg := fmt.Sprintf("error reading configuration file: %s", err.Error())
 		log.Errorf(msg)
 		return nil, fmt.Errorf(msg)
 	}
