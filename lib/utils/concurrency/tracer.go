@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+ * Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ package concurrency
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -31,7 +32,6 @@ import (
 // Tracer ...
 type Tracer struct {
 	taskSig      string
-	generation   uint
 	funcName     string
 	inOutMessage string
 	enabled      bool
@@ -40,12 +40,19 @@ type Tracer struct {
 	sw           temporal.Stopwatch
 }
 
+// IsLogActive ... FIXME:
+func IsLogActive(key string) bool {
+	if logs := os.Getenv("SAFESCALE_OPTIONAL_LOGS"); logs != "" {
+		return strings.Contains(logs, key)
+	}
+	return false
+}
+
 // NewTracer creates a new Tracer instance
 func NewTracer(t Task, message string, enabled bool) *Tracer {
 	tracer := Tracer{}
 	if t != nil {
 		tracer.taskSig = t.GetSignature()
-		tracer.generation = t.(*task).generation + 1
 	}
 	tracer.enabled = enabled
 
@@ -67,7 +74,7 @@ func NewTracer(t Task, message string, enabled bool) *Tracer {
 
 // GoingInMessage returns the content of the message when entering the function
 func (t *Tracer) GoingInMessage() string {
-	return blockquoteGeneration(t.generation) + ">>>" + t.inOutMessage
+	return ">>>" + t.inOutMessage
 }
 
 // WithStopwatch will add a measure of duration between GoingIn and GoingOut.
@@ -104,7 +111,8 @@ func (t *Tracer) OnExitTrace() func() {
 
 // GoingOutMessage returns the content of the message when exiting the function
 func (t *Tracer) GoingOutMessage() string {
-	return blockquoteGeneration(t.generation) + "<<<" + t.inOutMessage
+	// return blockquoteGeneration(t.generation) + "<<<" + t.inOutMessage
+	return "<<<" + t.inOutMessage
 }
 
 // GoingOut logs the output message (signifying we are going out) using TRACE level and adds duration if WithStopwatch() has been called.
@@ -128,8 +136,7 @@ func (t *Tracer) GoingOut() *Tracer {
 
 // TraceMessage returns a string containing a trace message
 func (t *Tracer) TraceMessage(format string, a ...interface{}) string {
-	root := fmt.Sprintf(blockquoteGeneration(t.generation)+"---%s: ", t.inOutMessage)
-	return root + fmt.Sprintf(format, a...)
+	return "---" + t.inOutMessage + ":" + fmt.Sprintf(format, a...)
 }
 
 // Trace traces a message
@@ -145,16 +152,7 @@ func (t *Tracer) Stopwatch() temporal.Stopwatch {
 	return t.sw
 }
 
-// blockquoteGeneration ...
-func blockquoteGeneration(generation uint) string {
-	const spacing = "  "
-	output := ""
-	for i := uint(0); i < generation; i++ {
-		output += spacing
-	}
-	return output
-}
-
+// removePart contains the basedir to remove from file pathes
 var removePart atomic.Value
 
 func getPartToRemove() string {

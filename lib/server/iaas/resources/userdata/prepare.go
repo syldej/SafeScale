@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+ * Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -113,10 +113,10 @@ func (ud *Content) Prepare(
 	var (
 		err error
 		// autoHostNetworkInterfaces bool
-		useLayer3Networking = true
+		useLayer3Networking bool
 		dnsList             []string
 		operatorUsername    string
-		useNATService       = false
+		useNATService       bool
 	)
 	if request.Password == "" {
 		password, err := utils.GeneratePassword(16)

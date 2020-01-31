@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+# Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -63,7 +63,7 @@ sfDetectFacts
 
 create_user() {
 	echo "Creating user {{.User}}..."
-	useradd {{.User}} --home-dir /home/{{.User}} --shell /bin/bash --comment "" --create-home
+	useradd {{.User}} --home-dir /home/{{.User}} --shell /bin/bash --comment "" --create-home || true
 	echo "{{.User}}:{{.Password}}" | chpasswd
 	groupadd -r docker
 	usermod -aG docker {{.User}}
@@ -88,7 +88,7 @@ pathremove() {
 		local PATHVARIABLE=${2:-PATH}
 		for DIR in ${!PATHVARIABLE} ; do
 				if [ "$DIR" != "$1" ] ; then
-				  NEWPATH=${NEWPATH:+$NEWPATH:}$DIR
+					NEWPATH=${NEWPATH:+$NEWPATH:}$DIR
 				fi
 		done
 		export $PATHVARIABLE="$NEWPATH"
@@ -109,7 +109,7 @@ EOF
 
 	chown -R safescale:safescale /opt/safescale
 	chmod -R 0640 /opt/safescale
-	find /opt/safescale -type d -exec chmod a+x {} \;
+	find /opt/safescale -type d -exec chmod a+rx {} \;
 	chmod 1777 /opt/safescale/var/tmp
 
 	chown -R {{.User}}:{{.User}} /home/{{.User}}

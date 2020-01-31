@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+ * Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 
 	log "github.com/sirupsen/logrus"
 
@@ -80,15 +82,17 @@ func UseStorages(tenantNames []string) (*StorageServices, error) {
 
 // UseService return the service referenced by the given name.
 // If necessary, this function try to load service from configuration file
-func UseService(tenantName string) (Service, error) {
+func UseService(tenantName string) (newService Service, err error) {
+	defer scerr.OnPanic(&err)
+
 	tenants, err := getTenantsFromCfg()
 	if err != nil {
 		return nil, err
 	}
 
 	var (
-		tenantInCfg = false
-		found       = false
+		tenantInCfg bool
+		found       bool
 		name        string
 		svc         Service
 		svcProvider = "__not_found__"
@@ -198,7 +202,10 @@ func UseService(tenantName string) (Service, error) {
 			if !found {
 				return nil, fmt.Errorf("missing configuration option 'MetadataBucketName'")
 			}
-			bucketName := anon.(string)
+			bucketName, ok := anon.(string)
+			if !ok {
+				return nil, fmt.Errorf("invalid bucket name, it's not a string")
+			}
 			found, err = metadataLocation.FindBucket(bucketName)
 			if err != nil {
 				return nil, fmt.Errorf("error accessing metadata location: %s", err.Error())
@@ -243,7 +250,10 @@ func UseService(tenantName string) (Service, error) {
 
 // validatRegexps validates regexp values from tenants file
 func validateRegexps(svc *service, tenant map[string]interface{}) error {
-	compute := tenant["compute"].(map[string]interface{})
+	compute, ok := tenant["compute"].(map[string]interface{})
+	if !ok {
+		return scerr.InvalidParameterError("tenant['compute']", "is not a map")
+	}
 
 	if reStr, ok := compute["WhitelistTemplateRegexp"].(string); ok {
 		// Validate regular expression
@@ -357,9 +367,14 @@ func initObjectStorageLocationConfig(tenant map[string]interface{}) (objectstora
 
 	// FIXME Remove google custom code
 	if config.Type == "google" {
-		if config.ProjectID, ok = identity["project_id"].(string); !ok {
-			return config, fmt.Errorf("problem parsing project_id")
+		keys := []string{"project_id", "private_key_id", "private_key", "client_email", "client_id", "auth_uri", "token_uri", "auth_provider_x509_cert_url", "client_x509_cert_url"}
+		for _, key := range keys {
+			if _, ok = identity[key].(string); !ok {
+				return config, fmt.Errorf("problem parsing %s", key)
+			}
 		}
+
+		config.ProjectID = identity["project_id"].(string)
 
 		googleCfg := stacks.GCPConfiguration{
 			Type:         "service_account",
@@ -505,9 +520,14 @@ func initMetadataLocationConfig(tenant map[string]interface{}) (objectstorage.Co
 
 	// FIXME Remove google custom code
 	if config.Type == "google" {
-		if config.ProjectID, ok = identity["project_id"].(string); !ok {
-			return config, fmt.Errorf("problem parsing project_id")
+		keys := []string{"project_id", "private_key_id", "private_key", "client_email", "client_id", "auth_uri", "token_uri", "auth_provider_x509_cert_url", "client_x509_cert_url"}
+		for _, key := range keys {
+			if _, ok = identity[key].(string); !ok {
+				return config, fmt.Errorf("problem parsing %s", key)
+			}
 		}
+
+		config.ProjectID = identity["project_id"].(string)
 
 		googleCfg := stacks.GCPConfiguration{
 			Type:         "service_account",

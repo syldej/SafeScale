@@ -1,5 +1,7 @@
+//+build ignore
+
 /*
- * Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+ * Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,7 +29,6 @@ import (
 	"github.com/urfave/cli"
 
 	"github.com/CS-SI/SafeScale/cli/perform/commands"
-
 	_ "github.com/CS-SI/SafeScale/lib/server"
 )
 
@@ -41,8 +42,8 @@ func main() {
 	app := cli.NewApp()
 	app.Name = "perform"
 	app.Usage = "perform COMMAND"
-	app.Version = VERSION + ", build " + REV + " (" + BUILD_DATE + ")"
-	app.Copyright = "(c) 2018-2019 CS-SI"
+	app.Version = Version + ", build " + Revision + " (" + BuildDate + ")"
+	app.Copyright = "(c) 2018-2020 CS-SI"
 	app.Compiled = time.Now()
 	app.Authors = []cli.Author{
 		cli.Author{

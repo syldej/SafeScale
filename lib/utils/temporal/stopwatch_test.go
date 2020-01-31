@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+ * Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -51,8 +51,8 @@ func TestStartStopDuration(t *testing.T) {
 	stowa.Stop()
 
 	res := FormatDuration(stowa.Duration())
-	if !strings.Contains(res, "0.010s") {
-		t.Errorf("This should be 10 ms and it isn't: %s", res)
+	if !strings.Contains(res, "0.01") {
+		t.Errorf("This should be near 10 ms and it isn't: %s", res)
 	}
 }
 

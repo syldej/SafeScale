@@ -1,5 +1,5 @@
 /*
-* Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+* Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -162,8 +162,9 @@ func (m *Metadata) Reload(task concurrency.Task) error {
 		func() error {
 			innerErr := m.Read(task, m.name)
 			if innerErr != nil {
+				// If error is ErrNotFound, instructs retry to stop without delay
 				if _, ok := innerErr.(scerr.ErrNotFound); ok {
-					return retry.StopRetryError("not found", innerErr)
+					return retry.AbortedError("not found", innerErr)
 				}
 				return innerErr
 			}
@@ -172,11 +173,14 @@ func (m *Metadata) Reload(task concurrency.Task) error {
 		temporal.GetDefaultDelay(),
 	)
 	if retryErr != nil {
-		// If it's not a timeout is something we don't know how to handle yet
-		if _, ok := retryErr.(scerr.ErrTimeout); !ok {
-			return scerr.Cause(retryErr)
+		switch realErr := retryErr.(type) {
+		case retry.ErrAborted:
+			return realErr.Cause()
+		case scerr.ErrTimeout:
+			return realErr
+		default:
+			return scerr.Cause(realErr)
 		}
-		return retryErr
 	}
 	return nil
 }

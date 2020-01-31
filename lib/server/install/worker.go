@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+ * Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,18 +22,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/hoststate"
+
 	"github.com/sirupsen/logrus"
 
 	pb "github.com/CS-SI/SafeScale/lib"
 	"github.com/CS-SI/SafeScale/lib/client"
 	clusterapi "github.com/CS-SI/SafeScale/lib/server/cluster/api"
-	"github.com/CS-SI/SafeScale/lib/server/cluster/enums/Complexity"
-	"github.com/CS-SI/SafeScale/lib/server/cluster/enums/Flavor"
+	"github.com/CS-SI/SafeScale/lib/server/cluster/enums/complexity"
+	"github.com/CS-SI/SafeScale/lib/server/cluster/enums/flavor"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
-	"github.com/CS-SI/SafeScale/lib/server/install/enums/Action"
-	"github.com/CS-SI/SafeScale/lib/server/install/enums/Method"
+	"github.com/CS-SI/SafeScale/lib/server/install/enums/action"
+	"github.com/CS-SI/SafeScale/lib/server/install/enums/method"
 	"github.com/CS-SI/SafeScale/lib/server/metadata"
-	srvutils "github.com/CS-SI/SafeScale/lib/server/utils"
+	"github.com/CS-SI/SafeScale/lib/utils"
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
 	"github.com/CS-SI/SafeScale/lib/utils/data"
 	"github.com/CS-SI/SafeScale/lib/utils/scerr"
@@ -56,8 +58,8 @@ type alterCommandCB func(string) string
 type worker struct {
 	feature   *Feature
 	target    Target
-	method    Method.Enum
-	action    Action.Enum
+	method    method.Enum
+	action    action.Enum
 	variables Variables
 	settings  Settings
 	startTime time.Time
@@ -86,7 +88,7 @@ type worker struct {
 // newWorker ...
 // alterCmdCB is used to change the content of keys 'run' or 'package' before executing
 // the requested action. If not used, must be nil
-func newWorker(f *Feature, t Target, m Method.Enum, a Action.Enum, cb alterCommandCB) (*worker, error) {
+func newWorker(f *Feature, t Target, m method.Enum, a action.Enum, cb alterCommandCB) (*worker, error) {
 	w := worker{
 		feature:   f,
 		target:    t,
@@ -125,12 +127,11 @@ func (w *worker) ConcernsCluster() bool {
 func (w *worker) CanProceed(s Settings) error {
 	switch w.target.Type() {
 	case "cluster":
-		// err := w.validateContextForCluster()
-		// if err == nil && !s.SkipSizingRequirements {
-		// 	err = w.validateClusterSizing()
-		// }
-		// return err
-		return nil
+		err := w.validateContextForCluster()
+		if err == nil && !s.SkipSizingRequirements {
+			err = w.validateClusterSizing()
+		}
+		return err
 	case "node":
 		return nil
 	case "host":
@@ -184,7 +185,7 @@ func (w *worker) identifyConcernedMasters() ([]*pb.Host, error) {
 		return []*pb.Host{}, nil
 	}
 	if w.concernedMasters == nil {
-		hosts, err := w.identifyAllMasters()
+		hosts, err := w.identifyAllRunningMasters()
 		if err != nil {
 			return nil, err
 		}
@@ -194,6 +195,7 @@ func (w *worker) identifyConcernedMasters() ([]*pb.Host, error) {
 		}
 		w.concernedMasters = concernedHosts
 	}
+	logrus.Debugf("Found %d concerned masters", len(w.concernedMasters))
 	return w.concernedMasters, nil
 }
 
@@ -201,7 +203,7 @@ func (w *worker) identifyConcernedMasters() ([]*pb.Host, error) {
 // hosts fail feature check.
 // The checks are done in parallel.
 func (w *worker) extractHostsFailingCheck(hosts []*pb.Host) ([]*pb.Host, error) {
-	concernedHosts := []*pb.Host{}
+	var concernedHosts []*pb.Host
 	dones := map[*pb.Host]chan error{}
 	results := map[*pb.Host]chan Results{}
 	for _, h := range hosts {
@@ -239,9 +241,9 @@ func (w *worker) extractHostsFailingCheck(hosts []*pb.Host) ([]*pb.Host, error) 
 	return concernedHosts, nil
 }
 
-// identifyAllMasters returns a list of all the hosts acting as masters and keep this list
+// identifyAllRunningMasters returns a list of all the running hosts acting as masters and keep this list
 // during all the install session
-func (w *worker) identifyAllMasters() ([]*pb.Host, error) {
+func (w *worker) identifyAllRunningMasters() ([]*pb.Host, error) {
 	if w.cluster == nil {
 		return []*pb.Host{}, nil
 	}
@@ -253,7 +255,13 @@ func (w *worker) identifyAllMasters() ([]*pb.Host, error) {
 			if err != nil {
 				return nil, err
 			}
-			w.allMasters = append(w.allMasters, host)
+			state, err := safescale.Status(i, temporal.GetExecutionTimeout())
+			if err != nil {
+				return nil, err
+			}
+			if state.Status == hoststate.STARTED.String() {
+				w.allMasters = append(w.allMasters, host)
+			}
 		}
 	}
 	return w.allMasters, nil
@@ -267,7 +275,7 @@ func (w *worker) identifyConcernedNodes() ([]*pb.Host, error) {
 	}
 
 	if w.concernedNodes == nil {
-		hosts, err := w.identifyAllNodes()
+		hosts, err := w.identifyAllRunningNodes()
 		if err != nil {
 			return nil, err
 		}
@@ -277,25 +285,32 @@ func (w *worker) identifyConcernedNodes() ([]*pb.Host, error) {
 		}
 		w.concernedNodes = concernedHosts
 	}
+	logrus.Debugf("Found %d concerned nodes", len(w.concernedNodes))
 	return w.concernedNodes, nil
 }
 
-// identifyAllNodes returns a list of all the hosts acting as public of private nodes and keep this list
+// identifyAllRunningNodes returns a list of all the running hosts acting as nodes and keep this list
 // during all the install session
-func (w *worker) identifyAllNodes() ([]*pb.Host, error) {
+func (w *worker) identifyAllRunningNodes() ([]*pb.Host, error) {
 	if w.cluster == nil {
 		return []*pb.Host{}, nil
 	}
 
 	if w.allNodes == nil {
 		hostClt := client.New().Host
-		allHosts := []*pb.Host{}
+		var allHosts []*pb.Host
 		for _, i := range w.cluster.ListNodeIDs(w.feature.task) {
 			host, err := hostClt.Inspect(i, temporal.GetExecutionTimeout())
 			if err != nil {
 				return nil, err
 			}
-			allHosts = append(allHosts, host)
+			state, err := hostClt.Status(i, temporal.GetExecutionTimeout())
+			if err != nil {
+				return nil, err
+			}
+			if state.Status == hoststate.STARTED.String() {
+				allHosts = append(allHosts, host)
+			}
 		}
 		w.allNodes = allHosts
 	}
@@ -345,7 +360,7 @@ func (w *worker) identifyConcernedGateways() ([]*pb.Host, error) {
 	return w.concernedGateways, nil
 }
 
-// identifyAllGateways returns a list of all the hosts acting as gateways and keep this list
+// identifyAllGateways returns a list of all running hosts acting as gateways and keep this list
 // during all the install session
 func (w *worker) identifyAllGateways() ([]*pb.Host, error) {
 	if w.allGateways != nil {
@@ -361,12 +376,11 @@ func (w *worker) identifyAllGateways() ([]*pb.Host, error) {
 	if err != nil {
 		return nil, err
 	}
-	gw, err := client.New().Host.Inspect(netCfg.GatewayID, temporal.GetExecutionTimeout())
+	hostClt := client.New().Host
+	gw, err := hostClt.Inspect(netCfg.GatewayID, temporal.GetExecutionTimeout())
 	if err != nil {
 		return nil, err
 	}
-
-	results = append(results, w.allGateways...)
 	results = append(results, gw)
 
 	if netCfg.SecondaryGatewayID != "" {
@@ -402,7 +416,7 @@ func (w *worker) Proceed(v Variables, s Settings) (results Results, err error) {
 	order := strings.Split(pace, ",")
 
 	// Applies reverseproxy rules to make it functional (feature may need it during the install)
-	if w.action == Action.Add && !s.SkipProxy {
+	if w.action == action.Add && !s.SkipProxy {
 		if w.cluster != nil {
 			err := w.setReverseProxy()
 			if err != nil {
@@ -494,7 +508,7 @@ func (w *worker) taskLaunchStep(task concurrency.Task, params concurrency.TaskPa
 	if anon, ok = p["variables"]; !ok {
 		return nil, scerr.InvalidParameterError("params[variables]", "is missing")
 	}
-	if vars, ok = p["variables"].(Variables); !ok {
+	if vars, ok = anon.(Variables); !ok {
 		return nil, scerr.InvalidParameterError("params[variables]", "must be a data.Map")
 	}
 	if vars == nil {
@@ -522,15 +536,15 @@ func (w *worker) taskLaunchStep(task concurrency.Task, params concurrency.TaskPa
 		anon, ok = stepMap[yamlTargetsKeyword]
 		if ok {
 			for i, j := range anon.(map[string]interface{}) {
-				switch j.(type) {
+				switch j := j.(type) {
 				case bool:
-					if j.(bool) {
+					if j {
 						stepT[i] = "true"
 					} else {
 						stepT[i] = "false"
 					}
 				case string:
-					stepT[i] = j.(string)
+					stepT[i] = j
 				}
 			}
 		} else {
@@ -550,11 +564,11 @@ func (w *worker) taskLaunchStep(task concurrency.Task, params concurrency.TaskPa
 	// Get the content of the action based on method
 	keyword := yamlRunKeyword
 	switch w.method {
-	case Method.Apt:
+	case method.Apt:
 		fallthrough
-	case Method.Yum:
+	case method.Yum:
 		fallthrough
-	case Method.Dnf:
+	case method.Dnf:
 		keyword = yamlPackageKeyword
 	}
 	anon, ok = stepMap[keyword]
@@ -581,23 +595,23 @@ func (w *worker) taskLaunchStep(task concurrency.Task, params concurrency.TaskPa
 			ok      bool
 			content interface{}
 		)
-		complexity := strings.ToLower(w.cluster.GetIdentity(w.feature.task).Complexity.String())
+		clusterComplexity := strings.ToLower(w.cluster.GetIdentity(w.feature.task).Complexity.String())
 		for k, anon := range options {
 			avails[strings.ToLower(k)] = anon
 		}
-		if content, ok = avails[complexity]; !ok {
-			if complexity == strings.ToLower(Complexity.Large.String()) {
-				complexity = Complexity.Normal.String()
+		if content, ok = avails[clusterComplexity]; !ok {
+			if clusterComplexity == strings.ToLower(complexity.Large.String()) {
+				clusterComplexity = complexity.Normal.String()
 			}
-			if complexity == strings.ToLower(Complexity.Normal.String()) {
-				if content, ok = avails[complexity]; !ok {
-					content, ok = avails[Complexity.Small.String()]
+			if clusterComplexity == strings.ToLower(complexity.Normal.String()) {
+				if content, ok = avails[clusterComplexity]; !ok {
+					content, ok = avails[complexity.Small.String()]
 				}
 			}
 		}
 		if ok {
 			optionsFileContent = content.(string)
-			vars["options"] = fmt.Sprintf("--options=%s/options.json", srvutils.TempFolder)
+			vars["options"] = fmt.Sprintf("--options=%s/options.json", utils.TempFolder)
 		}
 	} else {
 		vars["options"] = ""
@@ -634,7 +648,7 @@ func (w *worker) taskLaunchStep(task concurrency.Task, params concurrency.TaskPa
 	if ok {
 		value, ok := anon.(string)
 		if ok {
-			if strings.ToLower(value) == "yes" || strings.ToLower(value) != "true" {
+			if strings.ToLower(value) == "yes" || strings.ToLower(value) == "true" {
 				serial = true
 			}
 		}
@@ -686,13 +700,13 @@ func (w *worker) validateContextForCluster() error {
 		flavors := strings.Split(w.feature.specs.GetString(yamlKey), ",")
 		for _, k := range flavors {
 			k = strings.ToLower(k)
-			e, err := Flavor.Parse(k)
+			e, err := flavor.Parse(k)
 			if (err == nil && clusterFlavor == e) || (err != nil && k == "all") {
 				return nil
 			}
 		}
 	}
-	msg := fmt.Sprintf("feature '%s' not suitable for flavor '%s' of cluster", w.feature.DisplayName(), clusterFlavor.String())
+	msg := fmt.Sprintf("feature '%s' not suitable for flavor '%s' of the targeted cluster", w.feature.DisplayName(), clusterFlavor.String())
 	return fmt.Errorf(msg)
 }
 
@@ -785,13 +799,23 @@ func (w *worker) setReverseProxy() (err error) {
 	}
 	primaryKongController, err := NewKongController(svc, network, true)
 	if err != nil {
-		return fmt.Errorf("failed to apply reverse proxy rules: %s", err.Error())
+		switch err.(type) {
+		case scerr.ErrNotFound:
+			return nil
+		default:
+			return scerr.InvalidRequestError(fmt.Sprintf("failed to apply reverse proxy rules: %s", err.Error()))
+		}
 	}
 	var secondaryKongController *KongController
 	if network.SecondaryGatewayID != "" {
 		secondaryKongController, err = NewKongController(svc, network, false)
 		if err != nil {
-			return fmt.Errorf("failed to apply reverse proxy rules: %s", err.Error())
+			switch err.(type) {
+			case scerr.ErrNotFound:
+				return scerr.InconsistentError("reverseproxy found on primary gateway but not on secondary gateway")
+			default:
+				return scerr.InvalidRequestError(fmt.Sprintf("failed to apply reverse proxy rules: %s", err.Error()))
+			}
 		}
 	}
 
@@ -813,28 +837,28 @@ func (w *worker) setReverseProxy() (err error) {
 			targets[targetHosts] = "yes"
 		} else {
 			for i, j := range anon {
-				switch j.(type) {
+				switch j := j.(type) {
 				case bool:
-					if j.(bool) {
+					if j {
 						targets[i.(string)] = "yes"
 					} else {
 						targets[i.(string)] = "no"
 					}
 				case string:
-					targets[i.(string)] = j.(string)
+					targets[i.(string)] = j
 				}
 			}
 		}
 		hosts, err := w.identifyHosts(targets)
 		if err != nil {
-			return fmt.Errorf("failed to apply proxy rules: %s", err.Error())
+			return scerr.InvalidRequestError(fmt.Sprintf("failed to apply proxy rules: %s", err.Error()))
 		}
 
 		for _, h := range hosts {
 			tP, _ := w.feature.task.New() // FIXME Later
 			primaryGatewayVariables["HostIP"] = h.PrivateIp
 			primaryGatewayVariables["Hostname"] = h.Name
-			_, _ = tP.Start(asyncApplyProxyRule, data.Map{ // FIXME Later
+			_, _ = tP.Start(taskApplyProxyRule, data.Map{ // FIXME Later
 				"ctrl": primaryKongController,
 				"rule": rule,
 				"vars": &primaryGatewayVariables,
@@ -845,7 +869,7 @@ func (w *worker) setReverseProxy() (err error) {
 				tS, _ := w.feature.task.New() // FIXME Later
 				secondaryGatewayVariables["HostIP"] = h.PrivateIp
 				secondaryGatewayVariables["Hostname"] = h.Name
-				_, _ = tS.Start(asyncApplyProxyRule, data.Map{ // FIXME Later
+				_, _ = tS.Start(taskApplyProxyRule, data.Map{ // FIXME Later
 					"ctrl": secondaryKongController,
 					"rule": rule,
 					"vars": &secondaryGatewayVariables,
@@ -865,7 +889,7 @@ func (w *worker) setReverseProxy() (err error) {
 	return nil
 }
 
-func asyncApplyProxyRule(task concurrency.Task, params concurrency.TaskParameters) (concurrency.TaskResult, error) {
+func taskApplyProxyRule(task concurrency.Task, params concurrency.TaskParameters) (concurrency.TaskResult, error) {
 	ctrl := params.(data.Map)["ctrl"].(*KongController)
 	rule := params.(data.Map)["rule"].(map[interface{}]interface{})
 	vars := params.(data.Map)["vars"].(*Variables)
@@ -895,7 +919,7 @@ func (w *worker) identifyHosts(targets stepTargets) ([]*pb.Host, error) {
 	}
 
 	var (
-		hostsList = []*pb.Host{}
+		hostsList []*pb.Host
 		all       []*pb.Host
 	)
 
@@ -914,10 +938,10 @@ func (w *worker) identifyHosts(targets stepTargets) ([]*pb.Host, error) {
 		}
 		hostsList = append(hostsList, host)
 	case "*":
-		if w.action == Action.Add {
+		if w.action == action.Add {
 			all, err = w.identifyConcernedMasters()
 		} else {
-			all, err = w.identifyAllMasters()
+			all, err = w.identifyAllRunningMasters()
 		}
 		if err != nil {
 			return nil, err
@@ -933,10 +957,10 @@ func (w *worker) identifyHosts(targets stepTargets) ([]*pb.Host, error) {
 		}
 		hostsList = append(hostsList, host)
 	case "*":
-		if w.action == Action.Add {
+		if w.action == action.Add {
 			all, err = w.identifyConcernedNodes()
 		} else {
-			all, err = w.identifyAllNodes()
+			all, err = w.identifyAllRunningNodes()
 		}
 		if err != nil {
 			return nil, err
@@ -952,7 +976,7 @@ func (w *worker) identifyHosts(targets stepTargets) ([]*pb.Host, error) {
 		}
 		hostsList = append(hostsList, host)
 	case "*":
-		if w.action == Action.Add {
+		if w.action == action.Add {
 			all, err = w.identifyConcernedGateways()
 		} else {
 			all, err = w.identifyAllGateways()

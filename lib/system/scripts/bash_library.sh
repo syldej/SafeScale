@@ -1,5 +1,5 @@
 #
-# Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+# Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,10 +35,12 @@ sfFail() {
     fi
     exit $1
 }
+export -f sfFail
 
 function sfExit() {
     exit 0
 }
+export -f sfExit
 
 sfFinishPreviousInstall() {
     local unfinished=$(dpkg -l | grep -v ii | grep -v rc | tail -n +4 | wc -l)
@@ -96,6 +98,7 @@ sfIP2long() {
     IFS=. read -r a b c d <<<$*
     echo $(((((((a << 8) | b) << 8) | c) << 8) | d))
 }
+export -f sfIP2long
 
 sfLong2IP() {
     local ui32=$1
@@ -106,6 +109,7 @@ sfLong2IP() {
     done
     echo $ip
 }
+export -f sfLong2IP
 
 # Convert netmask to CIDR
 sfNetmask2cidr() {
@@ -153,6 +157,11 @@ sfCidr2iprange() {
     echo ${network}-${broadcast}
 }
 export -f sfCidr2iprange
+
+sfInterfaceWithIP() {
+    ifconfig | grep -B1 "$1" | grep -o "^\w*"
+}
+export -f sfInterfaceWithIP
 
 # sfAsyncStart <what> <duration> <command>...
 sfAsyncStart() {
@@ -377,6 +386,31 @@ sfKubectl() {
 }
 export -f sfKubectl
 
+sfHelm() {
+    # analyzes parameters...
+    local use_tls=--tls
+    local stop=0
+    for p in "$@"; do
+        case "$p" in
+            "--*")
+                ;;
+            "search"|"repo")
+                stop=1
+                use_tls=
+                ;;
+            "init")
+                echo "sfHelm init is forbidden" && return 1
+                ;;
+            *)
+                stop=1
+                ;;
+        esac
+        [ $stop -eq 1 ] && break
+    done
+    sudo -u cladm -i helm "$@" $use_tls
+}
+export -f sfHelm
+
 sfDcos() {
     sudo -u cladm -i dcos "$@"
 }
@@ -523,7 +557,7 @@ sfPgsqlUpdatePassword() {
     docker exec $id psql -h {{ .DefaultRouteIP }} -p 63008 -U postgres -c "ALTER USER $username WITH PASSWORD '$password'"
     retcode=$?
     if [ $retcode -eq 0 ]; then
-        for i in {{ range .MasterIPs }}{{.}} {{end}}; do
+        for i in {{ range .ClusterMasterIPs }}{{.}} {{end}}; do
             id=$(ssh $__cluster_admin_ssh_options__ cladm@$i docker ps {{ "--format '{{.Names}}:{{.ID}}'" }} 2>/dev/null | grep postgresql4platform_pooler | cut -d: -f2)
             retcode=$?
             if [ $retcode -eq 0 -a ! -z "$id" ]; then
@@ -572,7 +606,7 @@ sfKeycloakGetClient() {
     [ $# -eq 0 ] && return 1
     local name=$1
     shift
-    sfKeycloakRun get clients $@ | tail -n +1 | jq ".[] | select(.clientId == \"$name\")"
+    sfKeycloakRun get clients "$@" | tail -n +1 | jq ".[] | select(.clientId == \"$name\")"
 }
 export -f sfKeycloakGetClient
 
@@ -581,10 +615,10 @@ sfKeycloakDeleteClient() {
     local name=$1
     shift
 
-    local clientID=$(sfKeycloakGetClient $name $@)
+    local clientID=$(sfKeycloakGetClient $name "$@")
     [ -z "$clientID" ] && return 1
 
-    sfKeycloakRun delete clients/$clientID $@
+    sfKeycloakRun delete clients/$clientID "$@"
 }
 export -f sfKeycloakDeleteClient
 
@@ -594,7 +628,7 @@ sfKeycloakGetGroup() {
     [ $# -eq 0 ] && return 1
     local name=$1
     shift
-    sfKeycloakRun get groups $@ | tail -n +1 | jq ".[] | select(.name == \"$name\")"
+    sfKeycloakRun get groups "$@" | tail -n +1 | jq ".[] | select(.name == \"$name\")"
 }
 export -f sfKeycloakGetGroup
 
@@ -603,10 +637,10 @@ sfKeycloakDeleteGroup() {
     local name=$1
     shift
 
-    local clientID=$(sfKeycloakGetGroup $name $@)
+    local clientID=$(sfKeycloakGetGroup $name "$@")
     [ -z "$clientID" ] && return 1
 
-    sfKeycloakRun delete clients/$clientID $@
+    sfKeycloakRun delete clients/$clientID "$@"
 }
 export -f sfKeycloakDeleteGroup
 
@@ -795,6 +829,12 @@ sfGithubLastRelease() {
 }
 export -f sfGithubLastRelease
 
+# Returns the tag name corresponding to the last non-beta release
+sfGithubLastNotBetaRelease() {
+  curl -L -k -Ssl -X GET "https://api.github.com/repos/$1/$2/releases" | jq -c '.[] | select(.tag_name | contains("beta") | not)' | head -n 1 | jq -r .tag_name
+}
+export -f sfGithubLastNotBetaRelease
+
 # echoes a random string
 # $1 is the size of the result (optional)
 # $2 is the characters to choose from (optional); use preferably [:xxx:] notation (like [:alnum:] for all letters and digits)
@@ -803,7 +843,7 @@ sfRandomString() {
     [ $# -ge 1 ] && count=$1
     local charset="[:graph:]"
     [ $# -ge 2 ] && charset="$2"
-    </dev/urandom tr -dc "$charset" | head -c${count}
+    </dev/urandom tr -dc "$charset" | head -c${count} || true
     return 0
 }
 export -f sfRandomString
@@ -846,12 +886,12 @@ sfDetectFacts() {
         redhat|centos)
             FACTS["redhat_like"]=1
             FACTS["debian_like"]=0
-            FACTS["docker_version"]=$(yum info docker-ce)
+			      FACTS["docker_version"]=$(yum info docker-ce || true)
             ;;
         debian|ubuntu)
             FACTS["redhat_like"]=0
             FACTS["debian_like"]=1
-            FACTS["docker_version"]=$(apt info docker-ce 2>/dev/null | grep "^Version" | cut -d: -f2 | cut -d~ -f1)
+            FACTS["docker_version"]=$(apt show docker-ce 2>/dev/null | grep "^Version" | cut -d: -f3 | cut -d~ -f1 || true)
             ;;
     esac
     if systemctl | grep '\-.mount' &>/dev/null; then
@@ -873,30 +913,33 @@ sfDetectFacts() {
     [ $val -le 0 ] && val=1
     FACTS["2/3_of_threads"]=$val
 
-    FACTS["docker_version"]=$(docker version {{ "--format '{{.Server.Version}}'" }})
-
     sfProbeGPU
 
-    # Some facts about installed features
-    id=$(docker ps --filter "name=edgeproxy4network_proxy_1" {{ "--format '{{.ID}}'" }} 2>/dev/null)
-    # legacy...
-    [ -z "$id" ] && id=$(docker ps --filter "name=kong4gateway_proxy_1" {{ "--format '{{.ID}}'" }} 2>/dev/null)
-    [ -z "$id" ] && id=$(docker ps --filter "name=kong_proxy_1" {{ "--format '{{.ID}}'" }} 2>/dev/null)
-    FACTS["edgeproxy4network_docker_id"]=$id
+    if which docker &>/dev/null; then
+        FACTS["docker_version"]=$(docker version {{ "--format '{{.Server.Version}}'" }} || true)
 
-    id=$(docker ps --filter "name=ingress4platform_server_1" {{ "--format '{{.ID}}'" }} 2>/dev/null)
-    FACTS["ingress4platform_docker_id"]=$id
+        # Some facts about installed features
+        id=$(docker ps --filter "name=edgeproxy4network_proxy_1" {{ "--format '{{.ID}}'" }} 2>/dev/null || true)
+        # legacy...
+        [ -z "$id" ] && id=$(docker ps --filter "name=kong4gateway_proxy_1" {{ "--format '{{.ID}}'" }} 2>/dev/null || true)
+        [ -z "$id" ] && id=$(docker ps --filter "name=kong_proxy_1" {{ "--format '{{.ID}}'" }} 2>/dev/null || true)
+        FACTS["edgeproxy4network_docker_id"]=$id
 
-    id=$(docker ps {{ "--format '{{.Names}}:{{.ID}}'" }} 2>/dev/null | grep postgresql4platform_db | cut -d: -f2)
-    FACTS["postgresql4platform_docker_id"]=$id
+        id=$(docker ps --filter "name=ingress4platform_server_1" {{ "--format '{{.ID}}'" }} 2>/dev/null || true)
+        FACTS["ingress4platform_docker_id"]=$id
 
-    id=$(docker ps {{ "--format '{{.Names}}:{{.ID}}'" }} 2>/dev/null | grep keycloak4platform_server | cut -d: -f2)
-    FACTS["keycloak4platform_docker_id"]=$id
+        id=$(docker ps {{ "--format '{{.Names}}:{{.ID}}'" }} 2>/dev/null | grep postgresql4platform_db | cut -d: -f2 || true)
+        FACTS["postgresql4platform_docker_id"]=$id
+
+        id=$(docker ps {{ "--format '{{.Names}}:{{.ID}}'" }} 2>/dev/null | grep keycloak4platform_server | cut -d: -f2 || true)
+        FACTS["keycloak4platform_docker_id"]=$id
+    fi
 
     # "Serialize" facts to file
     declare -p FACTS >"${SERIALIZED_FACTS}"
     return 0
 }
+export -f sfDetectFacts
 
 sfGetFact() {
     [ $# -eq 0 ] && return

@@ -1,5 +1,5 @@
 #
-# Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+# Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,7 +17,9 @@
 ---
 feature:
     suitableFor:
+        host: no
         cluster: all
+
     requirements:
         features:
             - postgres4gateway
@@ -35,6 +37,7 @@ feature:
                             nodes: no
                         run: |
                             curl -Ssl -I -k https://localhost:8444/ 2>&1 | grep HTTP | grep 200 | grep OK &>/dev/null || sfFail 192
+                            sfExit
 
             add:
 #                pace: config,secret,networks,start

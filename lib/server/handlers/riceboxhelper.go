@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+ * Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,8 +19,9 @@ package handlers
 import (
 	"bytes"
 	"context"
-	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 	"text/template"
+
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
 
@@ -70,7 +71,7 @@ func exec(ctx context.Context, script string, data interface{}, hostid string, s
 		return err
 	}
 
-	cmd, err := ssh.SudoCommand(scriptCmd)
+	cmd, err := ssh.SudoCommand(scriptCmd, false)
 	if err != nil {
 		return err
 	}

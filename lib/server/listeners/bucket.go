@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+ * Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ import (
 	"context"
 	"fmt"
 
-	google_protobuf "github.com/golang/protobuf/ptypes/empty"
+	googleprotobuf "github.com/golang/protobuf/ptypes/empty"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -47,7 +47,7 @@ var BucketHandler = handlers.NewBucketHandler
 type BucketListener struct{}
 
 // List available buckets
-func (s *BucketListener) List(ctx context.Context, in *google_protobuf.Empty) (bl *pb.BucketList, err error) {
+func (s *BucketListener) List(ctx context.Context, in *googleprotobuf.Empty) (bl *pb.BucketList, err error) {
 	tracer := concurrency.NewTracer(nil, "", true).WithStopwatch().GoingIn()
 	defer tracer.OnExitTrace()()
 	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
@@ -75,7 +75,7 @@ func (s *BucketListener) List(ctx context.Context, in *google_protobuf.Empty) (b
 }
 
 // Create a new bucket
-func (s *BucketListener) Create(ctx context.Context, in *pb.Bucket) (empty *google_protobuf.Empty, err error) {
+func (s *BucketListener) Create(ctx context.Context, in *pb.Bucket) (empty *googleprotobuf.Empty, err error) {
 	bucketName := in.GetName()
 	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s')", bucketName), true).WithStopwatch().GoingIn()
 	defer tracer.OnExitTrace()()
@@ -99,11 +99,11 @@ func (s *BucketListener) Create(ctx context.Context, in *pb.Bucket) (empty *goog
 		return nil, status.Errorf(codes.Internal, tbr.Error())
 	}
 
-	return &google_protobuf.Empty{}, nil
+	return &googleprotobuf.Empty{}, nil
 }
 
 // Delete a bucket
-func (s *BucketListener) Delete(ctx context.Context, in *pb.Bucket) (empty *google_protobuf.Empty, err error) {
+func (s *BucketListener) Delete(ctx context.Context, in *pb.Bucket) (empty *googleprotobuf.Empty, err error) {
 	bucketName := in.GetName()
 	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s')", bucketName), true).WithStopwatch().GoingIn()
 	defer tracer.OnExitTrace()()
@@ -117,7 +117,7 @@ func (s *BucketListener) Delete(ctx context.Context, in *pb.Bucket) (empty *goog
 
 	tenant := GetCurrentTenant()
 	if tenant == nil {
-		logrus.Info("Can't delete buckets: no tenant set")
+		logrus.Info("Cannot delete buckets: no tenant set")
 		return nil, status.Errorf(codes.FailedPrecondition, "cannot delete bucket: no tenant set")
 	}
 
@@ -128,7 +128,7 @@ func (s *BucketListener) Delete(ctx context.Context, in *pb.Bucket) (empty *goog
 		return nil, status.Errorf(codes.Internal, tbr.Error())
 	}
 
-	return &google_protobuf.Empty{}, nil
+	return &googleprotobuf.Empty{}, nil
 }
 
 // Inspect a bucket
@@ -145,7 +145,7 @@ func (s *BucketListener) Inspect(ctx context.Context, in *pb.Bucket) (bmp *pb.Bu
 
 	tenant := GetCurrentTenant()
 	if tenant == nil {
-		logrus.Info("Can't inspect bucket: no tenant set")
+		logrus.Info("Cannot inspect bucket: no tenant set")
 		return nil, status.Errorf(codes.FailedPrecondition, "cannot inspect bucket: no tenant set")
 	}
 
@@ -162,7 +162,7 @@ func (s *BucketListener) Inspect(ctx context.Context, in *pb.Bucket) (bmp *pb.Bu
 }
 
 // Mount a bucket on the filesystem of the host
-func (s *BucketListener) Mount(ctx context.Context, in *pb.BucketMountingPoint) (empty *google_protobuf.Empty, err error) {
+func (s *BucketListener) Mount(ctx context.Context, in *pb.BucketMountingPoint) (empty *googleprotobuf.Empty, err error) {
 	bucketName := in.GetBucket()
 	hostName := in.GetHost().GetName()
 	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s', '%s')", bucketName, hostName), true).WithStopwatch().GoingIn()
@@ -176,20 +176,20 @@ func (s *BucketListener) Mount(ctx context.Context, in *pb.BucketMountingPoint) 
 
 	tenant := GetCurrentTenant()
 	if tenant == nil {
-		logrus.Info("Can't mount buckets: no tenant set")
+		logrus.Info("Cannot mount buckets: no tenant set")
 		return nil, status.Errorf(codes.FailedPrecondition, "cannot mount bucket: no tenant set")
 	}
 
 	handler := BucketHandler(tenant.Service)
 	err = handler.Mount(ctx, bucketName, hostName, in.GetPath())
 	if err != nil {
-		return &google_protobuf.Empty{}, status.Errorf(codes.Internal, err.Error())
+		return &googleprotobuf.Empty{}, status.Errorf(codes.Internal, err.Error())
 	}
-	return &google_protobuf.Empty{}, nil
+	return &googleprotobuf.Empty{}, nil
 }
 
 // Unmount a bucket from the filesystem of the host
-func (s *BucketListener) Unmount(ctx context.Context, in *pb.BucketMountingPoint) (empty *google_protobuf.Empty, err error) {
+func (s *BucketListener) Unmount(ctx context.Context, in *pb.BucketMountingPoint) (empty *googleprotobuf.Empty, err error) {
 	bucketName := in.GetBucket()
 	hostName := in.GetHost().GetName()
 	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s', '%s')", bucketName, hostName), true).WithStopwatch().GoingIn()
@@ -204,14 +204,14 @@ func (s *BucketListener) Unmount(ctx context.Context, in *pb.BucketMountingPoint
 
 	tenant := GetCurrentTenant()
 	if tenant == nil {
-		logrus.Info("Can't unmount bucket: no tenant set")
+		logrus.Info("Cannot unmount bucket: no tenant set")
 		return nil, status.Errorf(codes.FailedPrecondition, "cannot unmount bucket: no tenant set")
 	}
 
 	handler := BucketHandler(tenant.Service)
 	err = handler.Unmount(ctx, bucketName, hostName)
 	if err != nil {
-		return &google_protobuf.Empty{}, status.Errorf(codes.Internal, err.Error())
+		return &googleprotobuf.Empty{}, status.Errorf(codes.Internal, err.Error())
 	}
-	return &google_protobuf.Empty{}, nil
+	return &googleprotobuf.Empty{}, nil
 }

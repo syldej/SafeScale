@@ -26,7 +26,6 @@ import (
 	"time"
 
 	"github.com/davecgh/go-spew/spew"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
 	uuid "github.com/satori/go.uuid"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/crypto/ssh"
@@ -34,13 +33,14 @@ import (
 	"google.golang.org/api/googleapi"
 
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
-	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/HostProperty"
-	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/HostState"
+	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/hostproperty"
+	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/hoststate"
 	converters "github.com/CS-SI/SafeScale/lib/server/iaas/resources/properties"
 	propsv1 "github.com/CS-SI/SafeScale/lib/server/iaas/resources/properties/v1"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/userdata"
 	"github.com/CS-SI/SafeScale/lib/utils"
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
+	"github.com/CS-SI/SafeScale/lib/utils/data"
 	"github.com/CS-SI/SafeScale/lib/utils/retry"
 	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 	"github.com/CS-SI/SafeScale/lib/utils/temporal"
@@ -271,8 +271,8 @@ func (s *Stack) CreateHost(request resources.HostRequest) (host *resources.Host,
 	defaultGatewayID := ""
 	defaultGatewayPrivateIP := ""
 	if defaultGateway != nil {
-		err := defaultGateway.Properties.LockForRead(HostProperty.NetworkV1).ThenUse(func(v interface{}) error {
-			hostNetworkV1 := v.(*propsv1.HostNetwork)
+		err := defaultGateway.Properties.LockForRead(hostproperty.NetworkV1).ThenUse(func(clonable data.Clonable) error {
+			hostNetworkV1 := clonable.(*propsv1.HostNetwork)
 			defaultGatewayPrivateIP = hostNetworkV1.IPv4Addresses[defaultNetworkID]
 			defaultGatewayID = defaultGateway.ID
 			return nil
@@ -286,16 +286,16 @@ func (s *Stack) CreateHost(request resources.HostRequest) (host *resources.Host,
 		return nil, userData, fmt.Errorf("the host %s must have a gateway or be public", resourceName)
 	}
 
-	var nets []servers.Network
+	// var nets []servers.Network
 
 	// FIXME add provider network to host networks ?
 
 	// Add private networks
-	for _, n := range request.Networks {
-		nets = append(nets, servers.Network{
-			UUID: n.ID,
-		})
-	}
+	// for _, n := range request.Networks {
+	// 	nets = append(nets, servers.Network{
+	// 		UUID: n.ID,
+	// 	})
+	// }
 
 	// --- prepares data structures for Provider usage ---
 
@@ -316,7 +316,7 @@ func (s *Stack) CreateHost(request resources.HostRequest) (host *resources.Host,
 		template.DiskSize = request.DiskSize
 	} else if template.DiskSize == 0 {
 		// Determines appropriate disk size
-		if template.Cores < 16 {
+		if template.Cores < 16 { // nolint
 			template.DiskSize = 100
 		} else if template.Cores < 32 {
 			template.DiskSize = 200
@@ -358,8 +358,8 @@ func (s *Stack) CreateHost(request resources.HostRequest) (host *resources.Host,
 	host.PrivateKey = request.KeyPair.PrivateKey // Add PrivateKey to host definition
 	host.Password = request.Password
 
-	err = host.Properties.LockForWrite(HostProperty.NetworkV1).ThenUse(func(v interface{}) error {
-		hostNetworkV1 := v.(*propsv1.HostNetwork)
+	err = host.Properties.LockForWrite(hostproperty.NetworkV1).ThenUse(func(clonable data.Clonable) error {
+		hostNetworkV1 := clonable.(*propsv1.HostNetwork)
 		hostNetworkV1.DefaultNetworkID = defaultNetworkID
 		hostNetworkV1.DefaultGatewayID = defaultGatewayID
 		hostNetworkV1.DefaultGatewayPrivateIP = defaultGatewayPrivateIP
@@ -371,8 +371,8 @@ func (s *Stack) CreateHost(request resources.HostRequest) (host *resources.Host,
 	}
 
 	// Adds Host property SizingV1
-	err = host.Properties.LockForWrite(HostProperty.SizingV1).ThenUse(func(v interface{}) error {
-		hostSizingV1 := v.(*propsv1.HostSizing)
+	err = host.Properties.LockForWrite(hostproperty.SizingV1).ThenUse(func(clonable data.Clonable) error {
+		hostSizingV1 := clonable.(*propsv1.HostSizing)
 		// Note: from there, no idea what was the RequestedSize; caller will have to complement this information
 		hostSizingV1.Template = request.TemplateID
 		hostSizingV1.AllocatedSize = converters.ModelHostTemplateToPropertyHostSize(template)
@@ -516,7 +516,7 @@ func (s *Stack) WaitHostReady(hostParam interface{}, timeout time.Duration) (res
 			}
 
 			host = hostTmp
-			if host.LastState != HostState.STARTED {
+			if host.LastState != hoststate.STARTED {
 				return fmt.Errorf("not in ready state (current state: %s)", host.LastState.String())
 			}
 			return nil
@@ -647,13 +647,17 @@ func (s *Stack) InspectHost(hostParam interface{}) (host *resources.Host, err er
 
 	switch hostParam := hostParam.(type) {
 	case string:
+		if hostParam == "" {
+			return nil, scerr.InvalidParameterError("hostParam", "cannot be an empty string")
+		}
 		host = resources.NewHost()
 		host.ID = hostParam
 	case *resources.Host:
+		if hostParam == nil {
+			return nil, scerr.InvalidParameterError("hostParam", "cannot be nil")
+		}
 		host = hostParam
-	}
-
-	if host == nil {
+	default:
 		return nil, scerr.InvalidParameterError("hostParam", "must be a string or a *resources.Host")
 	}
 
@@ -731,8 +735,8 @@ func (s *Stack) InspectHost(hostParam interface{}) (host *resources.Host, err er
 		}
 	}
 
-	err = host.Properties.LockForWrite(HostProperty.NetworkV1).ThenUse(func(v interface{}) error {
-		hostNetworkV1 := v.(*propsv1.HostNetwork)
+	err = host.Properties.LockForWrite(hostproperty.NetworkV1).ThenUse(func(clonable data.Clonable) error {
+		hostNetworkV1 := clonable.(*propsv1.HostNetwork)
 		hostNetworkV1.IPv4Addresses = ip4bynetid
 		hostNetworkV1.IPv6Addresses = make(map[string]string)
 		hostNetworkV1.NetworksByID = netnamebyid
@@ -743,20 +747,20 @@ func (s *Stack) InspectHost(hostParam interface{}) (host *resources.Host, err er
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to update HostProperty.NetworkV1 : %s", err.Error())
+		return nil, fmt.Errorf("failed to update hostproperty.NetworkV1 : %s", err.Error())
 	}
 
 	allocated := fromMachineTypeToAllocatedSize(gcpHost.MachineType)
 
-	err = host.Properties.LockForWrite(HostProperty.SizingV1).ThenUse(func(v interface{}) error {
-		hostSizingV1 := v.(*propsv1.HostSizing)
+	err = host.Properties.LockForWrite(hostproperty.SizingV1).ThenUse(func(clonable data.Clonable) error {
+		hostSizingV1 := clonable.(*propsv1.HostSizing)
 		hostSizingV1.AllocatedSize.Cores = allocated.Cores
 		hostSizingV1.AllocatedSize.RAMSize = allocated.RAMSize
 		hostSizingV1.AllocatedSize.DiskSize = allocated.DiskSize
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to update HostProperty.SizingV1 : %s", err.Error())
+		return nil, fmt.Errorf("failed to update hostproperty.SizingV1 : %s", err.Error())
 	}
 
 	if !host.OK() {
@@ -774,28 +778,28 @@ func fromMachineTypeToAllocatedSize(machineType string) propsv1.HostSize {
 	return hz
 }
 
-func stateConvert(gcpHostStatus string) (HostState.Enum, error) {
+func stateConvert(gcpHostStatus string) (hoststate.Enum, error) {
 	switch gcpHostStatus {
 	case "PROVISIONING":
-		return HostState.STARTING, nil
+		return hoststate.STARTING, nil
 	case "REPAIRING":
-		return HostState.ERROR, nil
+		return hoststate.ERROR, nil
 	case "RUNNING":
-		return HostState.STARTED, nil
+		return hoststate.STARTED, nil
 	case "STAGING":
-		return HostState.STARTING, nil
+		return hoststate.STARTING, nil
 	case "STOPPED":
-		return HostState.STOPPED, nil
+		return hoststate.STOPPED, nil
 	case "STOPPING":
-		return HostState.STOPPING, nil
+		return hoststate.STOPPING, nil
 	case "SUSPENDED":
-		return HostState.STOPPED, nil
+		return hoststate.STOPPED, nil
 	case "SUSPENDING":
-		return HostState.STOPPING, nil
+		return hoststate.STOPPING, nil
 	case "TERMINATED":
-		return HostState.STOPPED, nil
+		return hoststate.STOPPED, nil
 	default:
-		return -1, fmt.Errorf("Unexpected host status: [%s]", gcpHostStatus)
+		return -1, fmt.Errorf("unexpected host status: [%s]", gcpHostStatus)
 	}
 }
 
@@ -1008,14 +1012,14 @@ func (s *Stack) RebootHost(id string) error {
 }
 
 // GetHostState returns the host identified by id
-func (s *Stack) GetHostState(hostParam interface{}) (HostState.Enum, error) {
+func (s *Stack) GetHostState(hostParam interface{}) (hoststate.Enum, error) {
 	if s == nil {
-		return HostState.ERROR, scerr.InvalidInstanceError()
+		return hoststate.ERROR, scerr.InvalidInstanceError()
 	}
 
 	host, err := s.InspectHost(hostParam)
 	if err != nil {
-		return HostState.ERROR, err
+		return hoststate.ERROR, err
 	}
 
 	return host.LastState, nil

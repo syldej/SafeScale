@@ -1,6 +1,6 @@
 #!/usr/bin/env bash -x
 #
-# Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+# Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -100,7 +100,7 @@ cat >${SF_VARDIR}/dcos/genconf/ip-detect <<-'EOF'
 #!/bin/sh
 #
 # Detects the IP address on the LAN for each DCOS host, using the first master IP
-IP=$(ip route show to match {{ index .MasterIPs 0 }} | grep -Eo '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | tail -1)
+IP=$(ip route show to match {{ index .ClusterMasterIPs 0 }} | grep -Eo '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | tail -1)
 [ ! -z "$IP" ] && echo $IP && exit 0
 
 exit 1
@@ -124,7 +124,7 @@ cluster_name: {{ .ClusterName }}
 exhibitor_storage_backend: static
 master_discovery: static
 master_list:
-{{ range .MasterIPs }}
+{{ range .ClusterMasterIPs }}
 - {{.}}
 {{ end }}
 {{ if .DNSServers }}

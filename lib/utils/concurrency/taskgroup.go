@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+ * Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,11 +19,12 @@ package concurrency
 import (
 	"context"
 	"fmt"
-	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 )
 
 // TaskGroupResult is a map of the TaskResult of each task
@@ -120,9 +121,9 @@ func (tg *taskGroup) Start(action TaskAction, params TaskParameters) (Task, erro
 
 	tid, _ := tg.GetID() // FIXME Later
 
-	status := tg.task.GetStatus()
-	if status != READY && status != RUNNING {
-		panic(fmt.Sprintf("Can't start new task in group '%s': neither ready nor running!", tid))
+	taskStatus := tg.task.GetStatus()
+	if taskStatus != READY && taskStatus != RUNNING {
+		return nil, scerr.InvalidRequestError(fmt.Sprintf("cannot start new task in group '%s': neither ready nor running", tid))
 	}
 
 	tg.last++
@@ -139,7 +140,7 @@ func (tg *taskGroup) Start(action TaskAction, params TaskParameters) (Task, erro
 		return nil, err
 	}
 	tg.subtasks = append(tg.subtasks, subtask)
-	if status != RUNNING {
+	if taskStatus != RUNNING {
 		tg.task.lock.Lock()
 		tg.task.status = RUNNING
 		tg.task.lock.Unlock()
@@ -151,12 +152,16 @@ func (tg *taskGroup) Start(action TaskAction, params TaskParameters) (Task, erro
 func (tg *taskGroup) Wait() (TaskResult, error) {
 	tid, _ := tg.GetID() // FIXME Later
 
-	if tg.task.status == DONE {
+	taskStatus := tg.task.GetStatus()
+	if taskStatus == DONE {
 		tg.task.lock.Lock()
 		defer tg.task.lock.Unlock()
 		return tg.result, tg.task.err
 	}
-	if tg.task.status != RUNNING {
+	if taskStatus == ABORTED {
+		return nil, scerr.AbortedError("", nil)
+	}
+	if taskStatus != RUNNING {
 		return nil, fmt.Errorf("cannot wait task group '%s': not running", tid)
 	}
 
@@ -178,12 +183,17 @@ func (tg *taskGroup) Wait() (TaskResult, error) {
 		}
 		results[sid] = result
 	}
-	errors := []string{}
+	var errors []string
 	for i, e := range errs {
 		errors = append(errors, fmt.Sprintf("%s: %s", i, e))
 	}
+
+	tg.task.lock.Lock()
+	defer tg.task.lock.Unlock()
 	tg.task.result = results
-	tg.task.err = fmt.Errorf(strings.Join(errors, "\n"))
+	if len(errors) > 0 {
+		tg.task.err = fmt.Errorf(strings.Join(errors, "\n"))
+	}
 	tg.task.status = DONE
 	tg.result = results
 	return results, tg.task.err
@@ -193,7 +203,7 @@ func (tg *taskGroup) Wait() (TaskResult, error) {
 func (tg *taskGroup) TryWait() (bool, TaskResult, error) {
 	tid, _ := tg.GetID() // FIXME Later
 
-	if tg.task.status != RUNNING {
+	if tg.task.GetStatus() != RUNNING {
 		return false, nil, fmt.Errorf("cannot wait task group '%s': not running", tid)
 	}
 	for _, s := range tg.subtasks {
@@ -212,7 +222,7 @@ func (tg *taskGroup) TryWait() (bool, TaskResult, error) {
 func (tg *taskGroup) WaitFor(duration time.Duration) (bool, TaskResult, error) {
 	tid, _ := tg.GetID() // FIXME Later
 
-	if tg.task.status != RUNNING {
+	if tg.task.GetStatus() != RUNNING {
 		return false, nil, fmt.Errorf("cannot wait task '%s': not running", tid)
 	}
 
@@ -235,23 +245,22 @@ func (tg *taskGroup) WaitFor(duration time.Duration) (bool, TaskResult, error) {
 	}
 }
 
-// Reset resets the task for reuse
-func (tg *taskGroup) Reset() (Task, error) {
-	tid, _ := tg.GetID() // FIXME Later
+// // Reset resets the task for reuse
+// func (tg *taskGroup) Reset() (Task, error) {
+// 	tid, _ := tg.GetID() // FIXME Later
 
-	if tg.task.status == RUNNING {
-		return nil, fmt.Errorf("Can't reset task group '%s': group running!", tid)
-	}
+// 	if tg.task.GetStatus() == RUNNING {
+// 		return nil, fmt.Errorf("cannot reset task group '%s': group is running", tid)
+// 	}
 
-	tg.task.lock.Lock()
-	defer tg.task.lock.Unlock()
-
-	tg.task.status = READY
-	tg.task.err = nil
-	tg.task.result = nil
-	tg.subtasks = []Task{}
-	return tg, nil
-}
+// 	tg.task.lock.Lock()
+// 	defer tg.task.lock.Unlock()
+// 	tg.task.status = READY
+// 	tg.task.err = nil
+// 	tg.task.result = nil
+// 	tg.subtasks = []Task{}
+// 	return tg, nil
+// }
 
 // // Result returns the result of the task action
 // func (tg *taskGroup) Result() TaskResult {

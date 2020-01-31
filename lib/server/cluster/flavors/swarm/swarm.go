@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+ * Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,23 +24,19 @@ import (
 	"bytes"
 	"fmt"
 	"sync/atomic"
-	txttmpl "text/template"
 
 	rice "github.com/GeertJohan/go.rice"
 	// log "github.com/sirupsen/logrus"
 
 	pb "github.com/CS-SI/SafeScale/lib"
 	"github.com/CS-SI/SafeScale/lib/server/cluster/control"
-	"github.com/CS-SI/SafeScale/lib/server/cluster/enums/Complexity"
-	"github.com/CS-SI/SafeScale/lib/server/cluster/enums/NodeType"
+	"github.com/CS-SI/SafeScale/lib/server/cluster/enums/complexity"
+	"github.com/CS-SI/SafeScale/lib/server/cluster/enums/nodetype"
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
+	"github.com/CS-SI/SafeScale/lib/utils/template"
 )
 
 //go:generate rice embed-go
-
-const (
-// tempFolder = "/opt/safescale/var/tmp/"
-)
 
 var (
 	templateBox atomic.Value
@@ -52,6 +48,7 @@ var (
 	Makers = control.Makers{
 		MinimumRequiredServers:      minimumRequiredServers,
 		DefaultGatewaySizing:        gatewaySizing,
+		DefaultMasterSizing:         masterSizing,
 		DefaultNodeSizing:           nodeSizing,
 		DefaultImage:                defaultImage,
 		GetTemplateBox:              getTemplateBox,
@@ -62,15 +59,14 @@ var (
 
 func minimumRequiredServers(task concurrency.Task, foreman control.Foreman) (int, int, int) {
 	var masterCount, privateNodeCount int
-	complexity := foreman.Cluster().GetIdentity(task).Complexity
-	switch complexity {
-	case Complexity.Small:
+	switch foreman.Cluster().GetIdentity(task).Complexity {
+	case complexity.Small:
 		masterCount = 1
 		privateNodeCount = 1
-	case Complexity.Normal:
+	case complexity.Normal:
 		masterCount = 3
 		privateNodeCount = 3
-	case Complexity.Large:
+	case complexity.Large:
 		masterCount = 5
 		privateNodeCount = 3
 	}
@@ -160,17 +156,19 @@ func getGlobalSystemRequirements(task concurrency.Task, foreman control.Foreman)
 		}
 
 		// parse then execute the template
-		tmplPrepared, err := txttmpl.New("install_requirements").Parse(tmplString)
+		// tmplPrepared, err := txttmpl.New("install_requirements").Funcs(template.MergeFuncs(nil, false)).Parse(tmplString)
+		tmplPrepared, err := template.Parse("install_requirements", tmplString, nil)
 		if err != nil {
 			return "", fmt.Errorf("error parsing script template: %s", err.Error())
 		}
 		dataBuffer := bytes.NewBufferString("")
 		identity := cluster.GetIdentity(task)
 		data := map[string]interface{}{
-			"CIDR":          netCfg.CIDR,
-			"CladmPassword": identity.AdminPassword,
-			"SSHPublicKey":  identity.Keypair.PublicKey,
-			"SSHPrivateKey": identity.Keypair.PrivateKey,
+			"CIDR":                 netCfg.CIDR,
+			"ClusterAdminUsername": "cladm",
+			"ClusterAdminPassword": identity.AdminPassword,
+			"SSHPublicKey":         identity.Keypair.PublicKey,
+			"SSHPrivateKey":        identity.Keypair.PrivateKey,
 		}
 		err = tmplPrepared.Execute(dataBuffer, data)
 		if err != nil {
@@ -182,16 +180,16 @@ func getGlobalSystemRequirements(task concurrency.Task, foreman control.Foreman)
 	return anon.(string), nil
 }
 
-func getNodeInstallationScript(task concurrency.Task, foreman control.Foreman, hostType NodeType.Enum) (string, map[string]interface{}) {
+func getNodeInstallationScript(task concurrency.Task, foreman control.Foreman, hostType nodetype.Enum) (string, map[string]interface{}) {
 	script := ""
 	data := map[string]interface{}{}
 
 	switch hostType {
-	case NodeType.Gateway:
+	case nodetype.Gateway:
 		script = "swarm_install_gateway.sh"
-	case NodeType.Master:
+	case nodetype.Master:
 		script = "swarm_install_master.sh"
-	case NodeType.Node:
+	case nodetype.Node:
 		script = "swarm_install_node.sh"
 	}
 	return script, data

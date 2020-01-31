@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+ * Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,14 +24,14 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
-
 	"github.com/urfave/cli"
 
 	"github.com/CS-SI/SafeScale/lib/client"
 	"github.com/CS-SI/SafeScale/lib/system"
 	"github.com/CS-SI/SafeScale/lib/utils"
 	clitools "github.com/CS-SI/SafeScale/lib/utils/cli"
-	"github.com/CS-SI/SafeScale/lib/utils/cli/enums/ExitCode"
+	"github.com/CS-SI/SafeScale/lib/utils/cli/enums/exitcode"
+	"github.com/CS-SI/SafeScale/lib/utils/cli/enums/outputs"
 	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 )
 
@@ -78,15 +78,13 @@ var sshRun = cli.Command{
 			timeout = temporal.GetHostTimeout()
 
 		}
-		retcode, stdout, stderr, err := client.New().SSH.Run(c.Args().Get(0), c.String("c"), temporal.GetConnectionTimeout(), timeout)
+		retcode, _, _, err := client.New().SSH.Run(c.Args().Get(0), c.String("c"), outputs.DISPLAY, temporal.GetConnectionTimeout(), timeout)
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "ssh run", false).Error())))
 		}
 		if retcode != 0 {
-			fmt.Print(stderr)
-			return cli.NewExitError(stderr, retcode)
+			return cli.NewExitError("", retcode)
 		}
-		fmt.Print(stdout)
 		return nil
 	},
 }
@@ -127,7 +125,7 @@ var sshCopy = cli.Command{
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "ssh copy", true).Error())))
 		}
 		if retcode != 0 {
-			return clitools.FailureResponse(clitools.ExitOnErrorWithMessage(ExitCode.Run, fmt.Sprintf("copy failed: retcode=%d (%s)", retcode, system.SSHErrorString(retcode))))
+			return clitools.FailureResponse(clitools.ExitOnErrorWithMessage(exitcode.Run, fmt.Sprintf("copy failed: retcode=%d (%s)", retcode, system.SSHErrorString(retcode))))
 		}
 		return clitools.SuccessResponse(nil)
 	},
@@ -137,13 +135,34 @@ var sshConnect = cli.Command{
 	Name:      "connect",
 	Usage:     "Connect to the host with interactive shell",
 	ArgsUsage: "<Host_name|Host_ID>",
+	Flags: []cli.Flag{
+		cli.StringFlag{
+			Name:  "u,username",
+			Value: "",
+			Usage: "Username to connect to",
+		},
+		cli.StringFlag{
+			Name:  "s,shell",
+			Value: "bash",
+			Usage: "Shell to use (default: bash)",
+		},
+	},
 	Action: func(c *cli.Context) error {
 		logrus.Tracef("SafeScale command: {%s}, {%s} with args {%s}", sshCmdName, c.Command.Name, c.Args())
 		if c.NArg() != 1 {
 			_ = cli.ShowSubcommandHelp(c)
 			return fmt.Errorf("missing mandatory argument <Host_name>")
 		}
-		err := client.New().SSH.Connect(c.Args().Get(0), 0)
+		var (
+			username, shell string
+		)
+		if c.IsSet("username") {
+			username = c.String("username")
+		}
+		if c.IsSet("shell") {
+			shell = c.String("shell")
+		}
+		err := client.New().SSH.Connect(c.Args().Get(0), username, shell, 0)
 		if err != nil {
 			return clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "ssh connect", false).Error()))
 		}

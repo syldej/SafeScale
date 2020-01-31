@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+ * Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,9 +25,9 @@ import (
 
 	pb "github.com/CS-SI/SafeScale/lib"
 	"github.com/CS-SI/SafeScale/lib/client"
-	"github.com/CS-SI/SafeScale/lib/server/install/enums/Action"
-	srvutils "github.com/CS-SI/SafeScale/lib/server/utils"
+	"github.com/CS-SI/SafeScale/lib/server/install/enums/action"
 	"github.com/CS-SI/SafeScale/lib/utils"
+	"github.com/CS-SI/SafeScale/lib/utils/cli/enums/outputs"
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
 	"github.com/CS-SI/SafeScale/lib/utils/data"
 	"github.com/CS-SI/SafeScale/lib/utils/scerr"
@@ -84,7 +84,7 @@ func (s StepResults) ErrorMessages() string {
 // UncompletedEntries returns an array of string of all keys where the script
 // to run action wasn't completed
 func (s StepResults) UncompletedEntries() []string {
-	output := []string{}
+	var output []string
 	for k, v := range s {
 		if !v.Completed() {
 			output = append(output, k)
@@ -245,7 +245,7 @@ type step struct {
 	// Name is the name of the step
 	Name string
 	// Action is the action of the step (check, add, remove)
-	Action Action.Enum
+	Action action.Enum
 	// Targets contains the host targets to select
 	Targets stepTargets
 	// Script contains the script to execute
@@ -275,14 +275,15 @@ func (is *step) Run(hosts []*pb.Host, v Variables, s Settings) (results StepResu
 	)()
 
 	if is.Serial || s.Serialize {
-		subtask, err := concurrency.NewTask(is.Worker.feature.task)
-		if err != nil {
-			return nil, err
-		}
 
 		for _, h := range hosts {
 			tracer.Trace("%s(%s):step(%s)@%s: starting", is.Worker.action.String(), is.Worker.feature.DisplayName(), is.Name, h.Name)
 			is.Worker.startTime = time.Now()
+
+			subtask, err := concurrency.NewTask(is.Worker.feature.task)
+			if err != nil {
+				return nil, err
+			}
 
 			cloneV := v.Clone()
 			cloneV["HostIP"] = h.PrivateIp
@@ -293,10 +294,9 @@ func (is *step) Run(hosts []*pb.Host, v Variables, s Settings) (results StepResu
 			}
 			result, _ := subtask.Run(is.taskRunOnHost, data.Map{"host": h, "variables": cloneV})
 			results[h.Name] = result.(stepResult)
-			_, _ = subtask.Reset() // FIXME Later
 
 			if !results[h.Name].Successful() {
-				if is.Worker.action == Action.Check { // Checks can fail and it's ok
+				if is.Worker.action == action.Check { // Checks can fail and it's ok
 					tracer.Trace("%s(%s):step(%s)@%s finished in %s: not present: %s",
 						is.Worker.action.String(), is.Worker.feature.DisplayName(), is.Name, h.Name,
 						temporal.FormatDuration(time.Since(is.Worker.startTime)), results.ErrorMessages())
@@ -349,7 +349,7 @@ func (is *step) Run(hosts []*pb.Host, v Variables, s Settings) (results StepResu
 			results[k] = result.(stepResult)
 
 			if !results[k].Successful() {
-				if is.Worker.action == Action.Check { // Checks can fail and it's ok
+				if is.Worker.action == action.Check { // Checks can fail and it's ok
 					tracer.Trace(": %s(%s):step(%s)@%s finished in %s: not present: %s",
 						is.Worker.action.String(), is.Worker.feature.DisplayName(), is.Name, k,
 						temporal.FormatDuration(time.Since(is.Worker.startTime)), results.ErrorMessages())
@@ -395,14 +395,14 @@ func (is *step) taskRunOnHost(t concurrency.Task, params concurrency.TaskParamet
 
 	// If options file is defined, upload it to the remote host
 	if is.OptionsFileContent != "" {
-		err := UploadStringToRemoteFile(is.OptionsFileContent, host, srvutils.TempFolder+"/options.json", "cladm", "safescale", "ug+rw-x,o-rwx")
+		err := UploadStringToRemoteFile(is.OptionsFileContent, host, utils.TempFolder+"/options.json", "cladm", "safescale", "ug+rw-x,o-rwx")
 		if err != nil {
 			return stepResult{err: err}, nil
 		}
 	}
 
 	// Uploads then executes command
-	filename := fmt.Sprintf("%s/feature.%s.%s_%s.sh", srvutils.TempFolder, is.Worker.feature.DisplayName(), strings.ToLower(is.Action.String()), is.Name)
+	filename := fmt.Sprintf("%s/feature.%s.%s_%s.sh", utils.TempFolder, is.Worker.feature.DisplayName(), strings.ToLower(is.Action.String()), is.Name)
 	err = UploadStringToRemoteFile(command, host, filename, "", "", "")
 	if err != nil {
 		return stepResult{err: err}, nil
@@ -412,7 +412,7 @@ func (is *step) taskRunOnHost(t concurrency.Task, params concurrency.TaskParamet
 	command = fmt.Sprintf("sudo bash %s; rc=$?; exit $rc", filename)
 
 	// Executes the script on the remote host
-	retcode, _, _, err := client.New().SSH.Run(host.Name, command, temporal.GetConnectionTimeout(), is.WallTime)
+	retcode, _, _, err := client.New().SSH.Run(host.Name, command, outputs.COLLECT, temporal.GetConnectionTimeout(), is.WallTime)
 	if err != nil {
 		return stepResult{err: err}, nil
 	}

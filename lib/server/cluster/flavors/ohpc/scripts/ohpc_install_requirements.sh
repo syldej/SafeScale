@@ -1,4 +1,4 @@
-# Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+# Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,27 +24,29 @@ install_common_requirements() {
     sed -i 's/^SELINUX=.*$/SELINUX=disabled/g' /etc/selinux/config
 
     # Upgrade to last CentOS revision
-    yum upgrade --assumeyes --tolerant && \
-    yum update --assumeyes
-    [ $? -ne 0 ] && exit 192
+    if [ "$(sfGetFact "redhat_like")" = "1" ]; then
+        yum upgrade --assumeyes --tolerant && \
+        yum update --assumeyes
+        [ $? -ne 0 ] && sfFail 192
+    fi
 
     # Create group nogroup
     groupadd nogroup &>/dev/null
 
-    # Creates user cladm
-    useradd -s /bin/bash -m -d /home/cladm cladm
+    # Creates user {{.ClusterAdminUsername}}
+    useradd -s /bin/bash -m -d /home/{{.ClusterAdminUsername}} {{.ClusterAdminUsername}}
     groupadd -r -f docker &>/dev/null
-    usermod -aG docker cladm
-    echo -e "{{ .CladmPassword }}\n{{ .CladmPassword }}" | passwd cladm
-    mkdir -p ~cladm/.ssh && chmod 0700 ~cladm/.ssh
-    echo "{{ .SSHPublicKey }}" >~cladm/.ssh/authorized_keys
-    echo "{{ .SSHPrivateKey }}" >~cladm/.ssh/id_rsa
-    chmod 0400 ~cladm/.ssh/*
-    echo "cladm ALL=(ALL) NOPASSWD:ALL" >>/etc/sudoers.d/10-admins
+    usermod -aG docker {{.ClusterAdminUsername}}
+    echo -e "{{ .{{.ClusterAdminUsername}}Password }}\n{{ .{{.ClusterAdminUsername}}Password }}" | passwd {{.ClusterAdminUsername}}
+    mkdir -p ~{{.ClusterAdminUsername}}/.ssh && chmod 0700 ~{{.ClusterAdminUsername}}/.ssh
+    echo "{{ .SSHPublicKey }}" >~{{.ClusterAdminUsername}}/.ssh/authorized_keys
+    echo "{{ .SSHPrivateKey }}" >~{{.ClusterAdminUsername}}/.ssh/id_rsa
+    chmod 0400 ~{{.ClusterAdminUsername}}/.ssh/*
+    echo "{{.ClusterAdminUsername}} ALL=(ALL) NOPASSWD:ALL" >>/etc/sudoers.d/10-admins
     chmod o-rwx /etc/sudoers.d/10-admins
 
-    mkdir -p ~cladm/.local/bin && find ~cladm/.local -exec chmod 0770 {} \;
-    cat >>~cladm/.bashrc <<-'EOF'
+    mkdir -p ~{{.ClusterAdminUsername}}/.local/bin && find ~{{.ClusterAdminUsername}}/.local -exec chmod 0770 {} \;
+    cat >>~{{.ClusterAdminUsername}}/.bashrc <<-'EOF'
         pathremove() {
             local IFS=':'
             local NEWPATH
@@ -68,11 +70,11 @@ install_common_requirements() {
         pathprepend $HOME/.local/bin
         pathappend /opt/mesosphere/bin
 EOF
-    chown -R cladm:cladm ~cladm
+    chown -R {{.ClusterAdminUsername}}:{{.ClusterAdminUsername}} ~{{.ClusterAdminUsername}}
 
-    for i in ~cladm/.hushlogin ~cladm/.cloud-warnings.skip; do
+    for i in ~{{.ClusterAdminUsername}}/.hushlogin ~{{.ClusterAdminUsername}}/.cloud-warnings.skip; do
         touch $i
-        chown root:cladm $i
+        chown root:{{.ClusterAdminUsername}} $i
         chmod ug+r-wx,o-rwx $i
     done
 

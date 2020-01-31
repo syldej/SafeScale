@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+ * Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,14 +21,17 @@ import (
 	"io/ioutil"
 	"strings"
 
-	log "github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus"
 
 	"github.com/spf13/viper"
 
 	pb "github.com/CS-SI/SafeScale/lib"
-	"github.com/CS-SI/SafeScale/lib/server/install/enums/Method"
+	clusterpropsv1 "github.com/CS-SI/SafeScale/lib/server/cluster/control/properties/v1"
+	"github.com/CS-SI/SafeScale/lib/server/cluster/enums/property"
+	"github.com/CS-SI/SafeScale/lib/server/install/enums/method"
 	"github.com/CS-SI/SafeScale/lib/utils"
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
+	"github.com/CS-SI/SafeScale/lib/utils/data"
 	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 )
@@ -74,7 +77,7 @@ type Feature struct {
 	// embedded tells if the feature is embedded in deploy
 	embedded bool
 	// Installers defines the installers available for the feature
-	installers map[Method.Enum]Installer
+	installers map[method.Enum]Installer
 	// Dependencies lists other feature(s) (by name) needed by this one
 	//dependencies []string
 	// Management contains a string map of data that could be used to manage the feature (if it makes sense)
@@ -88,7 +91,7 @@ type Feature struct {
 // ListFeatures lists all features suitable for hosts or clusters
 func ListFeatures(suitableFor string) ([]interface{}, error) {
 	features := allEmbeddedMap
-	cfgFiles := []interface{}{}
+	var cfgFiles []interface{}
 
 	var paths []string
 	paths = append(paths, utils.AbsPathify("$HOME/.safescale/features"))
@@ -99,10 +102,10 @@ func ListFeatures(suitableFor string) ([]interface{}, error) {
 		files, err := ioutil.ReadDir(path)
 		if err == nil {
 			for _, f := range files {
-				if isCfgFile := strings.HasSuffix(strings.ToLower(f.Name()), ".yml"); isCfgFile == true {
+				if strings.HasSuffix(strings.ToLower(f.Name()), ".yml") {
 					feature, err := NewFeature(concurrency.RootTask(), strings.Replace(strings.ToLower(f.Name()), ".yml", "", 1))
 					if err != nil {
-						log.Error(err) // FIXME Don't hide errors
+						logrus.Error(err) // FIXME Don't hide errors
 						continue
 					}
 					if _, ok := allEmbeddedMap[feature.displayName]; !ok {
@@ -149,7 +152,13 @@ func ListFeatures(suitableFor string) ([]interface{}, error) {
 
 // NewFeature searches for a spec file name 'name' and initializes a new Feature object
 // with its content
+// error contains :
+//    - *scerr.ErrNotFound if no feature is found by its name
+//    - *scerr.ErrSyntax if feature found contains syntax error
 func NewFeature(task concurrency.Task, name string) (_ *Feature, err error) {
+	if task == nil {
+		return nil, scerr.InvalidParameterError("task", "cannot be nil")
+	}
 	if name == "" {
 		return nil, scerr.InvalidParameterError("name", "cannot be empty string")
 	}
@@ -174,22 +183,20 @@ func NewFeature(task concurrency.Task, name string) (_ *Feature, err error) {
 			err = nil
 			var ok bool
 			if _, ok = allEmbeddedMap[name]; !ok {
-				err = fmt.Errorf("failed to find a feature named '%s'", name)
+				err = scerr.NotFoundError(fmt.Sprintf("failed to find a feature named '%s'", name))
 			} else {
 				feat = *allEmbeddedMap[name]
 				feat.task = task
 			}
 		default:
-			err = fmt.Errorf("failed to read the specification file of feature called '%s': %s", name, err.Error())
+			err = scerr.SyntaxError(fmt.Sprintf("failed to read the specification file of feature called '%s': %s", name, err.Error()))
 		}
-	} else {
-		if v.IsSet("feature") {
-			feat = Feature{
-				fileName:    name + ".yml",
-				displayName: name,
-				specs:       v,
-				task:        task,
-			}
+	} else if v.IsSet("feature") {
+		feat = Feature{
+			fileName:    name + ".yml",
+			displayName: name,
+			specs:       v,
+			task:        task,
 		}
 	}
 	return &feat, err
@@ -198,6 +205,9 @@ func NewFeature(task concurrency.Task, name string) (_ *Feature, err error) {
 // NewEmbeddedFeature searches for an embedded featured named 'name' and initializes a new Feature object
 // with its content
 func NewEmbeddedFeature(task concurrency.Task, name string) (_ *Feature, err error) {
+	if task == nil {
+		return nil, scerr.InvalidParameterError("task", "cannot be nil")
+	}
 	if name == "" {
 		return nil, scerr.InvalidParameterError("name", "cannot be empty string")
 	}
@@ -208,7 +218,7 @@ func NewEmbeddedFeature(task concurrency.Task, name string) (_ *Feature, err err
 
 	var feat Feature
 	if _, ok := allEmbeddedMap[name]; !ok {
-		err = fmt.Errorf("failed to find a feature named '%s'", name)
+		err = scerr.NotFoundError(fmt.Sprintf("failed to find a feature named '%s'", name))
 	} else {
 		feat = *allEmbeddedMap[name]
 		feat.task = task
@@ -217,22 +227,22 @@ func NewEmbeddedFeature(task concurrency.Task, name string) (_ *Feature, err err
 }
 
 // installerOfMethod instanciates the right installer corresponding to the method
-func (f *Feature) installerOfMethod(method Method.Enum) Installer {
+func (f *Feature) installerOfMethod(m method.Enum) Installer {
 	var installer Installer
-	switch method {
-	case Method.Bash:
+	switch m {
+	case method.Bash:
 		installer = NewBashInstaller()
-	case Method.Apt:
+	case method.Apt:
 		installer = NewAptInstaller()
-	case Method.Yum:
+	case method.Yum:
 		installer = NewYumInstaller()
-	case Method.Dnf:
+	case method.Dnf:
 		installer = NewDnfInstaller()
-	case Method.DCOS:
+	case method.DCOS:
 		installer = NewDcosInstaller()
-		//	case Method.Ansible:
+		//	case method.Ansible:
 		//		installer = NewAnsibleInstaller()
-		//	case Method.Helm:
+		//	case method.Helm:
 		//		installer = NewHelmInstaller()
 	}
 	return installer
@@ -294,9 +304,9 @@ func (f *Feature) Check(t Target, v Variables, s Settings) (_ Results, err error
 
 	methods := t.Methods()
 	var installer Installer
-	for _, method := range methods {
-		if f.specs.IsSet(fmt.Sprintf("feature.install.%s", strings.ToLower(method.String()))) {
-			installer = f.installerOfMethod(method)
+	for _, meth := range methods {
+		if f.specs.IsSet(fmt.Sprintf("feature.install.%s", strings.ToLower(meth.String()))) {
+			installer = f.installerOfMethod(meth)
 			if installer != nil {
 				break
 			}
@@ -306,7 +316,7 @@ func (f *Feature) Check(t Target, v Variables, s Settings) (_ Results, err error
 		return nil, fmt.Errorf("failed to find a way to check '%s'", f.DisplayName())
 	}
 
-	log.Debugf("Checking if feature '%s' is installed on %s '%s'...\n", f.DisplayName(), t.Type(), t.Name())
+	logrus.Debugf("Checking if feature '%s' is installed on %s '%s'...\n", f.DisplayName(), t.Type(), t.Name())
 
 	// 'v' may be updated by parallel tasks, so use copy of it
 	myV := make(Variables)
@@ -348,9 +358,9 @@ func (f *Feature) Add(t Target, v Variables, s Settings) (_ Results, err error) 
 		i         uint8
 	)
 	for i = 1; i <= uint8(len(methods)); i++ {
-		method := methods[i]
-		if f.specs.IsSet(fmt.Sprintf("feature.install.%s", strings.ToLower(method.String()))) {
-			installer = f.installerOfMethod(method)
+		meth := methods[i]
+		if f.specs.IsSet(fmt.Sprintf("feature.install.%s", strings.ToLower(meth.String()))) {
+			installer = f.installerOfMethod(meth)
 			if installer != nil {
 				break
 			}
@@ -389,7 +399,7 @@ func (f *Feature) Add(t Target, v Variables, s Settings) (_ Results, err error) 
 			return nil, fmt.Errorf("failed to check feature '%s': %s", f.DisplayName(), err.Error())
 		}
 		if results.Successful() {
-			log.Infof("Feature '%s' is already installed.", f.DisplayName())
+			logrus.Infof("Feature '%s' is already installed.", f.DisplayName())
 			return results, nil
 		}
 	}
@@ -419,12 +429,14 @@ func (f *Feature) Remove(t Target, v Variables, s Settings) (_ Results, err erro
 	defer tracer.OnExitTrace()()
 	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
-	results := Results{}
+	var (
+		results   Results
+		installer Installer
+	)
 	methods := t.Methods()
-	var installer Installer
-	for _, method := range methods {
-		if f.specs.IsSet(fmt.Sprintf("feature.install.%s", strings.ToLower(method.String()))) {
-			installer = f.installerOfMethod(method)
+	for _, meth := range methods {
+		if f.specs.IsSet(fmt.Sprintf("feature.install.%s", strings.ToLower(meth.String()))) {
+			installer = f.installerOfMethod(meth)
 			if installer != nil {
 				break
 			}
@@ -479,7 +491,7 @@ func (f *Feature) installRequirements(t Target, v Variables, s Settings) error {
 			if clusterInstance != nil {
 				msgTail = fmt.Sprintf("on cluster '%s'", clusterInstance.cluster.GetIdentity(f.task).Name)
 			}
-			log.Debugf("%s %s...\n", msgHead, msgTail)
+			logrus.Debugf("%s %s...\n", msgHead, msgTail)
 		}
 		for _, requirement := range f.specs.GetStringSlice(yamlKey) {
 			needed, err := NewFeature(f.task, requirement)
@@ -514,28 +526,53 @@ func (f *Feature) setImplicitParameters(t Target, v Variables) error {
 		v["ClusterComplexity"] = strings.ToLower(identity.Complexity.String())
 		v["ClusterFlavor"] = strings.ToLower(identity.Flavor.String())
 		networkCfg, err := cluster.GetNetworkConfig(f.task)
-		if err == nil {
-			// if networkCfg.VIP != nil {
-			// 	v["GatewayIP"] = networkCfg.VIP.PrivateIP // VPL: Should be replaced by the next entry
-			// 	v["DefaultRouteIP"] = networkCfg.VIP.PrivateIP
-			// 	v["PublicIP"] = networkCfg.VIP.PublicIP // VPL: Should be replaced by the next entry
-			// 	v["EndpointIP"] = networkCfg.VIP.PublicIP
-			v["PrimaryGatewayIP"] = networkCfg.GatewayIP
-			v["SecondaryGatewayIP"] = networkCfg.SecondaryGatewayIP
-			v["DefaultRouteIP"] = networkCfg.DefaultRouteIP
-			v["GatewayIP"] = v["DefaultRouteIP"] // legacy ...
-			v["PrimaryPublicIP"] = networkCfg.PrimaryPublicIP
-			v["SecondaryPublicIP"] = networkCfg.SecondaryPublicIP
-			v["EndpointIP"] = networkCfg.EndpointIP
-			v["PublicIP"] = v["EndpointIP"] // legacy ...
-			if _, ok := v["CIDR"]; !ok {
-				v["CIDR"] = networkCfg.CIDR
-			}
+		if err != nil {
+			return err
 		}
-		v["Masters"] = cluster.ListMasters(f.task)
-		v["MasterNames"] = cluster.ListMasterNames(f.task)
-		v["MasterIDs"] = cluster.ListMasterIDs(f.task)
-		v["MasterIPs"] = cluster.ListMasterIPs(f.task)
+		v["PrimaryGatewayIP"] = networkCfg.GatewayIP
+		v["DefaultRouteIP"] = networkCfg.DefaultRouteIP
+		v["GatewayIP"] = v["DefaultRouteIP"] // legacy ...
+		v["PrimaryPublicIP"] = networkCfg.PrimaryPublicIP
+		if networkCfg.SecondaryGatewayIP != "" {
+			v["SecondaryGatewayIP"] = networkCfg.SecondaryGatewayIP
+		}
+		v["SecondaryPublicIP"] = networkCfg.SecondaryPublicIP
+		v["EndpointIP"] = networkCfg.EndpointIP
+		v["PublicIP"] = v["EndpointIP"] // legacy ...
+		if _, ok := v["CIDR"]; !ok {
+			v["CIDR"] = networkCfg.CIDR
+		}
+		var controlPlaneV1 *clusterpropsv1.ControlPlane
+		err = cluster.GetProperties(f.task).LockForRead(property.ControlPlaneV1).ThenUse(func(clonable data.Clonable) error {
+			controlPlaneV1 = clonable.(*clusterpropsv1.ControlPlane)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		if controlPlaneV1.VirtualIP != nil && controlPlaneV1.VirtualIP.PrivateIP != "" {
+			v["ControlplaneUsesVIP"] = true
+			v["ControlplaneEndpointIP"] = controlPlaneV1.VirtualIP.PrivateIP
+		} else {
+			// Don't set ControlplaneUsesVIP if there is no VIP...
+			master, err := cluster.FindAvailableMaster(f.task)
+			if err != nil {
+				return err
+			}
+			host, err := cluster.GetService(f.task).InspectHost(master)
+			if err != nil {
+				return err
+			}
+			v["ControlplaneEndpointIP"] = host.GetPrivateIP()
+		}
+		v["ClusterMasters"] = cluster.ListMasters(f.task)
+		v["ClusterMasterNames"] = cluster.ListMasterNames(f.task)
+		v["ClusterMasterIDs"] = cluster.ListMasterIDs(f.task)
+		v["ClusterMasterIPs"] = cluster.ListMasterIPs(f.task)
+		v["ClusterNodes"] = cluster.ListNodes(f.task)
+		v["ClusterNodeNames"] = cluster.ListNodeNames(f.task)
+		v["ClusterNodeIDs"] = cluster.ListNodeIDs(f.task)
+		v["ClusterNodeIPs"] = cluster.ListNodeIPs(f.task)
 		v["ClusterAdminUsername"] = "cladm"
 		v["ClusterAdminPassword"] = identity.AdminPassword
 	} else {
@@ -550,12 +587,11 @@ func (f *Feature) setImplicitParameters(t Target, v Variables) error {
 			return scerr.InvalidParameterError("t", "must be a HostTarget or NodeTarget")
 		}
 
-		// v["Hostname"] = host.Name
-		// v["HostIP"] = host.PrivateIp
-		// FIXME:
+		// FIXME: host may be on a network with 2 gateways + missing variables like DefaultRouteIP, ...
 		gw := gatewayFromHost(host)
 		if gw != nil {
-			v["GatewayIP"] = gw.PrivateIp
+			v["GatewayIP"] = gw.PrivateIp // legacy
+			v["PrimaryGatewayIP"] = gw.PrivateIp
 			v["PublicIP"] = gw.PublicIp
 		} else {
 			v["PublicIP"] = host.PublicIp

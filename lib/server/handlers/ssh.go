@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+ * Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,13 +26,15 @@ import (
 
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
-	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/HostProperty"
+	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/hostproperty"
 	propsv1 "github.com/CS-SI/SafeScale/lib/server/iaas/resources/properties/v1"
 	"github.com/CS-SI/SafeScale/lib/server/metadata"
 	"github.com/CS-SI/SafeScale/lib/system"
+	"github.com/CS-SI/SafeScale/lib/utils/cli/enums/outputs"
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
+	"github.com/CS-SI/SafeScale/lib/utils/data"
 	"github.com/CS-SI/SafeScale/lib/utils/retry"
-	"github.com/CS-SI/SafeScale/lib/utils/retry/enums/Verdict"
+	"github.com/CS-SI/SafeScale/lib/utils/retry/enums/verdict"
 	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 )
@@ -118,8 +120,8 @@ func (handler *SSHHandler) GetConfig(ctx context.Context, hostParam interface{})
 		User:       user,
 	}
 
-	err = host.Properties.LockForRead(HostProperty.NetworkV1).ThenUse(func(v interface{}) error {
-		hostNetworkV1 := v.(*propsv1.HostNetwork)
+	err = host.Properties.LockForRead(hostproperty.NetworkV1).ThenUse(func(clonable data.Clonable) error {
+		hostNetworkV1 := clonable.(*propsv1.HostNetwork)
 		if hostNetworkV1.DefaultGatewayID != "" {
 			hostSvc := NewHostHandler(handler.service)
 			gw, err := hostSvc.Inspect(ctx, hostNetworkV1.DefaultGatewayID)
@@ -195,8 +197,8 @@ func (handler *SSHHandler) Run(ctx context.Context, hostName, cmd string) (retCo
 			return err
 		},
 		temporal.GetHostTimeout(),
-		func(t retry.Try, v Verdict.Enum) {
-			if v == Verdict.Retry {
+		func(t retry.Try, v verdict.Enum) {
+			if v == verdict.Retry {
 				logrus.Debugf("Remote SSH service on host '%s' isn't ready, retrying...\n", hostName)
 			}
 		},
@@ -208,15 +210,15 @@ func (handler *SSHHandler) Run(ctx context.Context, hostName, cmd string) (retCo
 	return retCode, stdOut, stdErr, err
 }
 
-// run executes command on the host
-func (handler *SSHHandler) run(ssh *system.SSHConfig, cmd string) (int, string, string, error) {
-	// Create the command
-	sshCmd, err := ssh.Command(cmd)
-	if err != nil {
-		return 0, "", "", err
-	}
-	return sshCmd.Run(nil) // FIXME It CAN lock, use RunWithTimeout instead
-}
+// // run executes command on the host
+// func (handler *SSHHandler) run(ssh *system.SSHConfig, cmd string) (int, string, string, error) {
+// 	// Create the command
+// 	sshCmd, err := ssh.Command(cmd)
+// 	if err != nil {
+// 		return 0, "", "", err
+// 	}
+// 	return sshCmd.Run(nil, false) // FIXME It CAN lock, use RunWithTimeout instead
+// }
 
 // run executes command on the host
 func (handler *SSHHandler) runWithTimeout(ssh *system.SSHConfig, cmd string, duration time.Duration) (int, string, string, error) {
@@ -225,7 +227,7 @@ func (handler *SSHHandler) runWithTimeout(ssh *system.SSHConfig, cmd string, dur
 	if err != nil {
 		return 0, "", "", err
 	}
-	return sshCmd.RunWithTimeout(nil, duration)
+	return sshCmd.RunWithTimeout(nil, outputs.DISPLAY, duration)
 }
 
 func extracthostName(in string) (string, error) {

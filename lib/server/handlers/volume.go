@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+ * Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,15 +26,18 @@ import (
 
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
-	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/HostProperty"
-	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/VolumeProperty"
-	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/VolumeSpeed"
+	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/hostproperty"
+	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/volumeproperty"
+	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/volumespeed"
 	propsv1 "github.com/CS-SI/SafeScale/lib/server/iaas/resources/properties/v1"
 	"github.com/CS-SI/SafeScale/lib/server/metadata"
 	"github.com/CS-SI/SafeScale/lib/system/nfs"
 	"github.com/CS-SI/SafeScale/lib/utils"
+	"github.com/CS-SI/SafeScale/lib/utils/cli/enums/outputs"
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
+	"github.com/CS-SI/SafeScale/lib/utils/data"
 	"github.com/CS-SI/SafeScale/lib/utils/retry"
+	"github.com/CS-SI/SafeScale/lib/utils/retry/enums/verdict"
 	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 )
@@ -46,7 +49,7 @@ type VolumeAPI interface {
 	Delete(ctx context.Context, ref string) error
 	List(ctx context.Context, all bool) ([]resources.Volume, error)
 	Inspect(ctx context.Context, ref string) (*resources.Volume, map[string]*propsv1.HostLocalMount, error)
-	Create(ctx context.Context, name string, size int, speed VolumeSpeed.Enum) (*resources.Volume, error)
+	Create(ctx context.Context, name string, size int, speed volumespeed.Enum) (*resources.Volume, error)
 	Attach(ctx context.Context, volume string, host string, path string, format string, doNotFormat bool) error
 	Detach(ctx context.Context, volume string, host string) error
 }
@@ -121,8 +124,8 @@ func (handler *VolumeHandler) Delete(ctx context.Context, ref string) (err error
 		return err
 	}
 
-	err = volume.Properties.LockForRead(VolumeProperty.AttachedV1).ThenUse(func(v interface{}) error {
-		volumeAttachmentsV1 := v.(*propsv1.VolumeAttachments)
+	err = volume.Properties.LockForRead(volumeproperty.AttachedV1).ThenUse(func(clonable data.Clonable) error {
+		volumeAttachmentsV1 := clonable.(*propsv1.VolumeAttachments)
 		nbAttach := len(volumeAttachmentsV1.Hosts)
 		if nbAttach > 0 {
 			var list []string
@@ -201,19 +204,19 @@ func (handler *VolumeHandler) Inspect(
 	mounts = map[string]*propsv1.HostLocalMount{}
 	hostSvc := NewHostHandler(handler.service)
 
-	err = volume.Properties.LockForRead(VolumeProperty.AttachedV1).ThenUse(func(v interface{}) error {
-		volumeAttachedV1 := v.(*propsv1.VolumeAttachments)
+	err = volume.Properties.LockForRead(volumeproperty.AttachedV1).ThenUse(func(clonable data.Clonable) error {
+		volumeAttachedV1 := clonable.(*propsv1.VolumeAttachments)
 		if len(volumeAttachedV1.Hosts) > 0 {
 			for id := range volumeAttachedV1.Hosts {
 				host, err := hostSvc.Inspect(ctx, id)
 				if err != nil {
 					continue
 				}
-				err = host.Properties.LockForRead(HostProperty.VolumesV1).ThenUse(func(v interface{}) error {
-					hostVolumesV1 := v.(*propsv1.HostVolumes)
+				err = host.Properties.LockForRead(hostproperty.VolumesV1).ThenUse(func(clonable data.Clonable) error {
+					hostVolumesV1 := clonable.(*propsv1.HostVolumes)
 					if volumeAttachment, found := hostVolumesV1.VolumesByID[volume.ID]; found {
-						err = host.Properties.LockForRead(HostProperty.MountsV1).ThenUse(func(v interface{}) error {
-							hostMountsV1 := v.(*propsv1.HostMounts)
+						err = host.Properties.LockForRead(hostproperty.MountsV1).ThenUse(func(clonable data.Clonable) error {
+							hostMountsV1 := clonable.(*propsv1.HostMounts)
 							if mount, ok := hostMountsV1.LocalMountsByPath[hostMountsV1.LocalMountsByDevice[volumeAttachment.Device]]; ok {
 								mounts[host.Name] = mount
 							} else {
@@ -241,7 +244,7 @@ func (handler *VolumeHandler) Inspect(
 }
 
 // Create a volume
-func (handler *VolumeHandler) Create(ctx context.Context, name string, size int, speed VolumeSpeed.Enum) (volume *resources.Volume, err error) {
+func (handler *VolumeHandler) Create(ctx context.Context, name string, size int, speed volumespeed.Enum) (volume *resources.Volume, err error) {
 	if handler == nil {
 		return nil, scerr.InvalidInstanceError()
 	}
@@ -250,6 +253,15 @@ func (handler *VolumeHandler) Create(ctx context.Context, name string, size int,
 	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s', %d, %s)", name, size, speed.String()), true).WithStopwatch().GoingIn()
 	defer tracer.OnExitTrace()()
 	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	_, err = metadata.LoadVolume(handler.service, name)
+	if err != nil {
+		if _, ok := err.(scerr.ErrNotFound); !ok {
+			return nil, err
+		}
+	} else {
+		return nil, scerr.DuplicateError(fmt.Sprintf("volume '%s' already exists", name))
+	}
 
 	volume, err = handler.service.CreateVolume(resources.VolumeRequest{
 		Name:  name,
@@ -346,8 +358,8 @@ func (handler *VolumeHandler) Attach(ctx context.Context, volumeName, hostName, 
 		server     *nfs.Server
 	)
 
-	err = volume.Properties.LockForWrite(VolumeProperty.AttachedV1).ThenUse(func(v interface{}) error {
-		volumeAttachedV1 := v.(*propsv1.VolumeAttachments)
+	err = volume.Properties.LockForWrite(volumeproperty.AttachedV1).ThenUse(func(clonable data.Clonable) error {
+		volumeAttachedV1 := clonable.(*propsv1.VolumeAttachments)
 
 		mountPoint = path
 		if path == resources.DefaultVolumeMountPoint {
@@ -364,10 +376,10 @@ func (handler *VolumeHandler) Attach(ctx context.Context, volumeName, hostName, 
 			}
 		}
 
-		return host.Properties.LockForWrite(HostProperty.VolumesV1).ThenUse(func(v interface{}) error {
-			hostVolumesV1 := v.(*propsv1.HostVolumes)
-			return host.Properties.LockForWrite(HostProperty.MountsV1).ThenUse(func(v interface{}) error {
-				hostMountsV1 := v.(*propsv1.HostMounts)
+		return host.Properties.LockForWrite(hostproperty.VolumesV1).ThenUse(func(clonable data.Clonable) error {
+			hostVolumesV1 := clonable.(*propsv1.HostVolumes)
+			return host.Properties.LockForWrite(hostproperty.MountsV1).ThenUse(func(clonable data.Clonable) error {
+				hostMountsV1 := clonable.(*propsv1.HostMounts)
 				// Check if the volume is already mounted elsewhere
 				if device, found := hostVolumesV1.DevicesByID[volume.ID]; found {
 					mount, ok := hostMountsV1.LocalMountsByPath[hostMountsV1.LocalMountsByDevice[device]]
@@ -450,10 +462,10 @@ func (handler *VolumeHandler) Attach(ctx context.Context, volumeName, hostName, 
 						}
 						return nil
 					},
-					temporal.GetContextTimeout(),
+					temporal.GetExecutionTimeout(),
 				)
 				if retryErr != nil {
-					return fmt.Errorf("failed to confirm the disk attachment after %s", temporal.GetContextTimeout())
+					return fmt.Errorf("failed to confirm the disk attachment after %s", temporal.GetExecutionTimeout())
 				}
 
 				// Recovers real device name from the system
@@ -540,8 +552,8 @@ func (handler *VolumeHandler) Attach(ctx context.Context, volumeName, hostName, 
 
 	defer func() {
 		if err != nil {
-			err2 := volume.Properties.LockForWrite(VolumeProperty.AttachedV1).ThenUse(func(v interface{}) error {
-				volumeAttachedV1 := v.(*propsv1.VolumeAttachments)
+			err2 := volume.Properties.LockForWrite(volumeproperty.AttachedV1).ThenUse(func(clonable data.Clonable) error {
+				volumeAttachedV1 := clonable.(*propsv1.VolumeAttachments)
 				delete(volumeAttachedV1.Hosts, host.ID)
 				return nil
 			})
@@ -564,8 +576,8 @@ func (handler *VolumeHandler) Attach(ctx context.Context, volumeName, hostName, 
 
 	defer func() {
 		if err != nil {
-			err2 := host.Properties.LockForWrite(HostProperty.VolumesV1).ThenUse(func(v interface{}) error {
-				hostVolumesV1 := v.(*propsv1.HostVolumes)
+			err2 := host.Properties.LockForWrite(hostproperty.VolumesV1).ThenUse(func(clonable data.Clonable) error {
+				hostVolumesV1 := clonable.(*propsv1.HostVolumes)
 				delete(hostVolumesV1.VolumesByID, volume.ID)
 				delete(hostVolumesV1.VolumesByName, volume.Name)
 				delete(hostVolumesV1.VolumesByDevice, volumeUUID)
@@ -576,8 +588,8 @@ func (handler *VolumeHandler) Attach(ctx context.Context, volumeName, hostName, 
 				logrus.Warnf("failed to set host '%s' metadata about volumes", volumeName)
 				err = scerr.AddConsequence(err, err2)
 			}
-			err2 = host.Properties.LockForWrite(HostProperty.MountsV1).ThenUse(func(v interface{}) error {
-				hostMountsV1 := v.(*propsv1.HostMounts)
+			err2 = host.Properties.LockForWrite(hostproperty.MountsV1).ThenUse(func(clonable data.Clonable) error {
+				hostMountsV1 := clonable.(*propsv1.HostMounts)
 				delete(hostMountsV1.LocalMountsByDevice, volumeUUID)
 				delete(hostMountsV1.LocalMountsByPath, mountPoint)
 				return nil
@@ -615,17 +627,39 @@ func (handler *VolumeHandler) listAttachedDevices(ctx context.Context, host *res
 
 	defer scerr.OnExitLogError(concurrency.NewTracer(nil, "", true).TraceMessage(""), &err)()
 
+	sshHandler := NewSSHHandler(handler.service)
+
+	// retrieve ssh config to perform some commands
+	ssh, err := sshHandler.GetConfig(ctx, host.ID)
+	if err != nil {
+		return nil, err
+	}
+	cmd := "sudo lsblk -l -o NAME,TYPE | grep disk | cut -d' ' -f1"
+	sshCmd, err := ssh.Command(cmd)
+	if err != nil {
+		return nil, err
+	}
+
 	var (
 		retcode        int
 		stdout, stderr string
 	)
-	cmd := "sudo lsblk -l -o NAME,TYPE | grep disk | cut -d' ' -f1"
-	sshHandler := NewSSHHandler(handler.service)
 	retryErr := retry.WhileUnsuccessfulDelay1Second(
 		func() error {
-			retcode, stdout, stderr, err = sshHandler.Run(ctx, host.ID, cmd)
-			if err != nil {
-				return err
+			retryErr := retry.WhileUnsuccessfulDelay1SecondWithNotify(
+				func() error {
+					retcode, stdout, stderr, err = sshCmd.RunWithTimeout(nil, outputs.COLLECT, temporal.GetHostTimeout())
+					return err
+				},
+				temporal.GetHostTimeout(),
+				func(t retry.Try, v verdict.Enum) {
+					if v == verdict.Retry {
+						logrus.Debugf("Remote SSH service on host '%s' isn't ready, retrying...", host.Name)
+					}
+				},
+			)
+			if retryErr != nil {
+				return retryErr
 			}
 			if retcode != 0 {
 				if retcode == 255 {
@@ -677,8 +711,8 @@ func (handler *VolumeHandler) Detach(ctx context.Context, volumeName, hostName s
 	}
 
 	// Obtain volume attachment ID
-	err = host.Properties.LockForWrite(HostProperty.VolumesV1).ThenUse(func(v interface{}) error {
-		hostVolumesV1 := v.(*propsv1.HostVolumes)
+	err = host.Properties.LockForWrite(hostproperty.VolumesV1).ThenUse(func(clonable data.Clonable) error {
+		hostVolumesV1 := clonable.(*propsv1.HostVolumes)
 
 		// Check the volume is effectively attached
 		attachment, found := hostVolumesV1.VolumesByID[volume.ID]
@@ -687,8 +721,8 @@ func (handler *VolumeHandler) Detach(ctx context.Context, volumeName, hostName s
 		}
 
 		// Obtain mounts information
-		return host.Properties.LockForWrite(HostProperty.MountsV1).ThenUse(func(v interface{}) error {
-			hostMountsV1 := v.(*propsv1.HostMounts)
+		return host.Properties.LockForWrite(hostproperty.MountsV1).ThenUse(func(clonable data.Clonable) error {
+			hostMountsV1 := clonable.(*propsv1.HostMounts)
 			device := attachment.Device
 			mountPath = hostMountsV1.LocalMountsByDevice[device]
 			mount := hostMountsV1.LocalMountsByPath[mountPath]
@@ -714,8 +748,8 @@ func (handler *VolumeHandler) Detach(ctx context.Context, volumeName, hostName s
 			}
 
 			// Check if volume (or a subdir in volume) is shared
-			return host.Properties.LockForWrite(HostProperty.SharesV1).ThenUse(func(v interface{}) error {
-				hostSharesV1 := v.(*propsv1.HostShares)
+			return host.Properties.LockForWrite(hostproperty.SharesV1).ThenUse(func(clonable data.Clonable) error {
+				hostSharesV1 := clonable.(*propsv1.HostShares)
 
 				for _, v := range hostSharesV1.ByID {
 					if strings.Index(v.Path, mount.Path) == 0 {
@@ -763,8 +797,8 @@ func (handler *VolumeHandler) Detach(ctx context.Context, volumeName, hostName s
 				delete(hostMountsV1.LocalMountsByPath, mount.Path)
 
 				// Updates volume property propsv1.VolumeAttachments
-				return volume.Properties.LockForWrite(VolumeProperty.AttachedV1).ThenUse(func(v interface{}) error {
-					volumeAttachedV1 := v.(*propsv1.VolumeAttachments)
+				return volume.Properties.LockForWrite(volumeproperty.AttachedV1).ThenUse(func(clonable data.Clonable) error {
+					volumeAttachedV1 := clonable.(*propsv1.VolumeAttachments)
 					delete(volumeAttachedV1.Hosts, host.ID)
 					return nil
 				})

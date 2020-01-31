@@ -1,4 +1,4 @@
-VERSION=19.10.0
+VERSION=20.01.0
 export VERSION
 
 ifeq ($(MAKE_LEVEL),)
@@ -9,7 +9,6 @@ MAKE_LEVEL+=1
 MAKE_TRACE=$(shell printf '    %.0s' {1..$(MAKE_LEVEL)})
 endif
 export MAKE_LEVEL
-
 
 ifndef VERBOSE
 MAKEFLAGS += --no-print-directory
@@ -23,9 +22,11 @@ REMOTE := $(shell git rev-parse $(UPSTREAM))
 BASE := $(shell git merge-base HEAD $(UPSTREAM))
 
 GO?=go
+GOFMT?=gofmt
 CP?=cp
 RM?=rm
 BROWSER?=firefox
+BUILDTOOL?=dep
 
 ifeq ($(OS),Windows_NT)
 HOME := $(shell printf "%b" "$(HOME)" 2>/dev/null | tr '\' '/' > .tmpfile 2>/dev/null && cat .tmpfile && $(RM) .tmpfile)

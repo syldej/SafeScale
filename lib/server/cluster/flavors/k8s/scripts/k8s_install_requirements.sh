@@ -1,4 +1,4 @@
-# Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+# Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,20 +23,20 @@ install_common_requirements() {
     setenforce 0 &>/dev/null
     sed -i 's/^SELINUX=.*$/SELINUX=disabled/g' /etc/selinux/config &>/dev/null
 
-    # Creates user cladm
-    useradd -s /bin/bash -m -d /home/cladm cladm
+    # Creates user {{.ClusterAdminUsername}}
+    useradd -s /bin/bash -m -d /home/{{.ClusterAdminUsername}} {{.ClusterAdminUsername}}
     groupadd -r -f docker &>/dev/null
-    usermod -aG docker cladm
-    echo -e "{{ .CladmPassword }}\n{{ .CladmPassword }}" | passwd cladm
-    mkdir -p ~cladm/.ssh && chmod 0700 ~cladm/.ssh
-    echo "{{ .SSHPublicKey }}" >~cladm/.ssh/authorized_keys
-    echo "{{ .SSHPrivateKey }}" >~cladm/.ssh/id_rsa
-    chmod 0400 ~cladm/.ssh/*
-    echo "cladm ALL=(ALL) NOPASSWD:ALL" >>/etc/sudoers.d/10-admins
+    usermod -aG docker {{.ClusterAdminUsername}}
+    echo -e "{{ .ClusterAdminPassword }}\n{{ .ClusterAdminPassword }}" | passwd {{.ClusterAdminUsername}}
+    mkdir -p ~{{.ClusterAdminUsername}}/.ssh && chmod 0700 ~{{.ClusterAdminUsername}}/.ssh
+    echo "{{ .SSHPublicKey }}" >~{{.ClusterAdminUsername}}/.ssh/authorized_keys
+    echo "{{ .SSHPrivateKey }}" >~{{.ClusterAdminUsername}}/.ssh/id_rsa
+    chmod 0400 ~{{.ClusterAdminUsername}}/.ssh/*
+    echo "{{.ClusterAdminUsername}} ALL=(ALL) NOPASSWD:ALL" >>/etc/sudoers.d/10-admins
     chmod o-rwx /etc/sudoers.d/10-admins
 
-    mkdir -p ~cladm/.local/bin && find ~cladm/.local -exec chmod 0770 {} \;
-    cat >>~cladm/.bashrc <<-'EOF'
+    mkdir -p ~{{.ClusterAdminUsername}}/.local/bin && find ~{{.ClusterAdminUsername}}/.local -exec chmod 0770 {} \;
+    cat >>~{{.ClusterAdminUsername}}/.bashrc <<-'EOF'
         pathremove() {
             local IFS=':'
             local NEWPATH
@@ -58,12 +58,13 @@ install_common_requirements() {
             export $PATHVARIABLE="${!PATHVARIABLE:+${!PATHVARIABLE}:}$1"
         }
         pathprepend $HOME/.local/bin
+        pathprepend /usr/local/bin
 EOF
-    chown -R cladm:cladm ~cladm
+    chown -R {{ .ClusterAdminUsername}}:{{.ClusterAdminUsername}} ~{{.ClusterAdminUsername}}
 
-    for i in ~cladm/.hushlogin ~cladm/.cloud-warnings.skip; do
+    for i in ~{{.ClusterAdminUsername}}/.hushlogin ~{{.ClusterAdminUsername}}/.cloud-warnings.skip; do
         touch $i
-        chown root:cladm $i
+        chown root:{{.ClusterAdminUsername}} $i
         chmod ug+r-wx,o-rwx $i
     done
 
@@ -82,15 +83,13 @@ case $(sfGetFact "linux_kind") in
         sfRetry 3m 5 "sfApt update && sfApt install -y wget curl time jq unzip"
         curl -kqSsL -O https://downloads.rclone.org/rclone-current-linux-amd64.zip && \
         unzip rclone-current-linux-amd64.zip && \
-        cd rclone-*-linux-amd64 && \
-        cp rclone /usr/bin/ && \
-        rm -rf rclone-* && \
-        chown root:root /usr/bin/rclone && \
-        chmod 755 /usr/bin/rclone && \
+        cp rclone-*-linux-amd64/rclone /usr/local/bin && \
         mkdir -p /usr/local/share/man/man1 && \
-        cp rclone.1 /usr/local/share/man/man1/ && \
+        cp rclone-*-linux-amd64/rclone.1 /usr/local/share/man/man1/ && \
+        rm -rf rclone-* && \
+        chown root:root /usr/local/bin/rclone && \
+        chmod 755 /usr/local/bin/rclone && \
         mandb
-
         ;;
     redhat|centos)
         yum makecache fast

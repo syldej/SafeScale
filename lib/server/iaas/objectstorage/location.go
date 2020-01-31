@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+ * Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -114,7 +114,7 @@ func (l *location) ListBuckets(prefix string) ([]string, error) {
 
 	defer concurrency.NewTracer(nil, fmt.Sprintf("('%s')", prefix), false /*Trace.Location*/).GoingIn().OnExitTrace()()
 
-	list := []string{}
+	var list []string
 	err := stow.WalkContainers(l.stowLocation, stow.NoPrefix, 100,
 		func(c stow.Container, err error) error {
 			if err != nil {

@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+ * Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,16 +28,15 @@ import (
 	"github.com/CS-SI/SafeScale/lib/client"
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
-	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/HostProperty"
-	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/IPVersion"
-	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/NetworkProperty"
+	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/hostproperty"
+	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/ipversion"
+	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/networkproperty"
 	propsv1 "github.com/CS-SI/SafeScale/lib/server/iaas/resources/properties/v1"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/userdata"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/stacks/openstack"
 	"github.com/CS-SI/SafeScale/lib/server/install"
 	"github.com/CS-SI/SafeScale/lib/server/metadata"
 	safescaleutils "github.com/CS-SI/SafeScale/lib/server/utils"
-	srvutils "github.com/CS-SI/SafeScale/lib/server/utils"
 	"github.com/CS-SI/SafeScale/lib/utils"
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
 	"github.com/CS-SI/SafeScale/lib/utils/data"
@@ -52,7 +51,7 @@ import (
 
 // NetworkAPI defines API to manage networks
 type NetworkAPI interface {
-	Create(context.Context, string, string, IPVersion.Enum, resources.SizingRequirements, string, string, bool) (*resources.Network, error)
+	Create(context.Context, string, string, ipversion.Enum, resources.SizingRequirements, string, string, bool) (*resources.Network, error)
 	List(context.Context, bool) ([]*resources.Network, error)
 	Inspect(context.Context, string) (*resources.Network, error)
 	Delete(context.Context, string) error
@@ -61,7 +60,7 @@ type NetworkAPI interface {
 // NetworkHandler an implementation of NetworkAPI
 type NetworkHandler struct {
 	service   iaas.Service
-	ipVersion IPVersion.Enum
+	ipVersion ipversion.Enum
 }
 
 // NewNetworkHandler Creates new Network service
@@ -74,7 +73,7 @@ func NewNetworkHandler(svc iaas.Service) NetworkAPI {
 // Create creates a network
 func (handler *NetworkHandler) Create(
 	ctx context.Context,
-	name string, cidr string, ipVersion IPVersion.Enum,
+	name string, cidr string, ipVersion ipversion.Enum,
 	sizing resources.SizingRequirements, theos string, gwname string,
 	failover bool,
 ) (network *resources.Network, err error) {
@@ -117,7 +116,7 @@ func (handler *NetworkHandler) Create(
 		return nil, fmt.Errorf("failed to determine if CIDR is not routable: %v", err)
 	}
 	if routable {
-		return nil, fmt.Errorf("cannot create such a network, CIDR must be not routable; please choose an appropriate CIDR (RFC1918)")
+		return nil, fmt.Errorf("cannot create such a network, CIDR must be not routable; please provide an appropriate CIDR (RFC1918)")
 	}
 
 	// Create the network
@@ -258,16 +257,10 @@ func (handler *NetworkHandler) Create(
 		secondaryGatewayName = "gw2-" + network.Name
 	}
 
-	keypairName := "kp_" + network.Name
-	keypair, err := handler.service.CreateKeyPair(keypairName)
-	if err != nil {
-		return nil, err
-	}
-
 	gwRequest := resources.GatewayRequest{
-		ImageID:    img.ID,
-		Network:    network,
-		KeyPair:    keypair,
+		ImageID: img.ID,
+		Network: network,
+		// KeyPair:    keypair,
 		TemplateID: template.ID,
 		CIDR:       network.CIDR,
 	}
@@ -284,6 +277,11 @@ func (handler *NetworkHandler) Create(
 	// Starts primary gateway creation
 	primaryRequest := gwRequest
 	primaryRequest.Name = primaryGatewayName
+	keypair, err := handler.service.CreateKeyPair("kp_" + primaryGatewayName)
+	if err != nil {
+		return nil, err
+	}
+	primaryRequest.KeyPair = keypair
 	primaryTask, err := concurrency.NewTaskWithContext(ctx)
 	if err != nil {
 		return nil, err
@@ -301,6 +299,11 @@ func (handler *NetworkHandler) Create(
 	if failover {
 		secondaryRequest := gwRequest
 		secondaryRequest.Name = secondaryGatewayName
+		keypair, err = handler.service.CreateKeyPair("kp_" + secondaryGatewayName)
+		if err != nil {
+			return nil, err
+		}
+		secondaryRequest.KeyPair = keypair
 		secondaryTask, err = concurrency.NewTaskWithContext(ctx)
 		if err != nil {
 			return nil, err
@@ -400,7 +403,7 @@ func (handler *NetworkHandler) Create(
 	}
 
 	// Starts gateway(s) installation
-	primaryTask, err = primaryTask.Reset()
+	primaryTask, err = concurrency.NewTaskWithContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -409,7 +412,7 @@ func (handler *NetworkHandler) Create(
 		return nil, err
 	}
 	if failover && secondaryTask != nil {
-		secondaryTask, err = secondaryTask.Reset()
+		secondaryTask, err = concurrency.NewTaskWithContext(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -451,7 +454,7 @@ func (handler *NetworkHandler) Create(
 	}
 
 	// Starts gateway(s) installation
-	primaryTask, err = primaryTask.Reset()
+	primaryTask, err = concurrency.NewTaskWithContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -463,7 +466,7 @@ func (handler *NetworkHandler) Create(
 		return nil, err
 	}
 	if failover && secondaryTask != nil {
-		secondaryTask, err = secondaryTask.Reset()
+		secondaryTask, err = concurrency.NewTaskWithContext(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -556,7 +559,7 @@ func (handler *NetworkHandler) createGateway(t concurrency.Task, params concurre
 
 	// Binds gateway to VIP
 	if request.Network.VIP != nil {
-		err = handler.service.BindHostToVIP(request.Network.VIP, gw)
+		err = handler.service.BindHostToVIP(request.Network.VIP, gw.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -570,8 +573,8 @@ func (handler *NetworkHandler) createGateway(t concurrency.Task, params concurre
 	userData.IsPrimaryGateway = primary
 
 	// Updates requested sizing in gateway property propsv1.HostSizing
-	err = gw.Properties.LockForWrite(HostProperty.SizingV1).ThenUse(func(v interface{}) error {
-		gwSizingV1 := v.(*propsv1.HostSizing)
+	err = gw.Properties.LockForWrite(hostproperty.SizingV1).ThenUse(func(clonable data.Clonable) error {
+		gwSizingV1 := clonable.(*propsv1.HostSizing)
 		gwSizingV1.RequestedSize = &propsv1.HostSize{
 			Cores:     sizing.MinCores,
 			RAMSize:   sizing.MinRAMSize,
@@ -656,11 +659,11 @@ func (handler *NetworkHandler) installPhase2OnGateway(task concurrency.Task, par
 	if err != nil {
 		return nil, err
 	}
-	err = install.UploadStringToRemoteFile(string(content), safescaleutils.ToPBHost(gw), srvutils.TempFolder+"/user_data.phase2.sh", "", "", "")
+	err = install.UploadStringToRemoteFile(string(content), safescaleutils.ToPBHost(gw), utils.TempFolder+"/user_data.phase2.sh", "", "", "")
 	if err != nil {
 		return nil, err
 	}
-	command := fmt.Sprintf("sudo bash %s/%s; exit $?", srvutils.TempFolder, "user_data.phase2.sh")
+	command := fmt.Sprintf("sudo bash %s/%s; exit $?", utils.TempFolder, "user_data.phase2.sh")
 	sshHandler := NewSSHHandler(handler.service)
 
 	// logrus.Debugf("Configuring gateway '%s', phase 2", gw.Name)
@@ -741,8 +744,8 @@ func (handler *NetworkHandler) deleteGatewayMetadata(m *metadata.Gateway) (err e
 	return derr
 }
 
-func (handler *NetworkHandler) unbindHostFromVIP(vip *resources.VIP, host *resources.Host) (err error) {
-	err = handler.service.UnbindHostFromVIP(vip, host)
+func (handler *NetworkHandler) unbindHostFromVIP(vip *resources.VirtualIP, host *resources.Host) (err error) {
+	err = handler.service.UnbindHostFromVIP(vip, host.ID)
 	if err != nil {
 		switch err.(type) {
 		case scerr.ErrNotFound, scerr.ErrTimeout:
@@ -825,8 +828,8 @@ func (handler *NetworkHandler) Delete(ctx context.Context, ref string) (err erro
 
 	// Check if hosts are still attached to network according to metadata
 	var errorMsg string
-	err = network.Properties.LockForRead(NetworkProperty.HostsV1).ThenUse(func(v interface{}) error {
-		networkHostsV1 := v.(*propsv1.NetworkHosts)
+	err = network.Properties.LockForRead(networkproperty.HostsV1).ThenUse(func(clonable data.Clonable) error {
+		networkHostsV1 := clonable.(*propsv1.NetworkHosts)
 		hostsLen := len(networkHostsV1.ByName)
 		if hostsLen > 0 {
 			list := make([]string, 0, hostsLen)
@@ -868,7 +871,7 @@ func (handler *NetworkHandler) Delete(ctx context.Context, ref string) (err erro
 				if merr != nil {
 					return merr
 				}
-				err = handler.service.UnbindHostFromVIP(network.VIP, mhm)
+				err = handler.service.UnbindHostFromVIP(network.VIP, mhm.ID)
 				if err != nil {
 					logrus.Errorf("failed to unbind primary gateway from VIP: %v", err)
 				}
@@ -898,12 +901,7 @@ func (handler *NetworkHandler) Delete(ctx context.Context, ref string) (err erro
 			logrus.Error(err)
 		} else {
 			if network.VIP != nil {
-				mhm, merr := mh.Get()
-				if merr != nil {
-					return merr
-				}
-
-				err = handler.service.UnbindHostFromVIP(network.VIP, mhm)
+				err = handler.service.UnbindHostFromVIP(network.VIP, network.SecondaryGatewayID)
 				if err != nil {
 					logrus.Errorf("failed to unbind secondary gateway from VIP: %v", err)
 				}
@@ -1007,7 +1005,7 @@ func (handler *NetworkHandler) Delete(ctx context.Context, ref string) (err erro
 	// case <-ctx.Done():
 	// 	logrus.Warnf("Network delete cancelled by user")
 	// 	hostSizingV1 := propsv1.NewHostSizing()
-	// 	err := metadataHost.Properties.LockForRead(HostProperty.SizingV1).ThenUse(func(v interface{}) error {
+	// 	err := metadataHost.Properties.LockForRead(hostproperty.SizingV1).ThenUse(func(clonable data.Clonable) error {
 	// 		hostSizingV1 = v.(*propsv1.HostSizing)
 	// 		return nil
 	// 	})

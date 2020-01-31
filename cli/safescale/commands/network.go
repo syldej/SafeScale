@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+ * Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,8 +33,9 @@ var networkCmdName = "network"
 
 // NetworkCmd command
 var NetworkCmd = cli.Command{
-	Name:  "network",
-	Usage: "network COMMAND",
+	Name:    "network",
+	Aliases: []string{"net"},
+	Usage:   "network COMMAND",
 	Subcommands: []cli.Command{
 		networkCreate,
 		networkDelete,
@@ -119,15 +120,19 @@ var networkInspect = cli.Command{
 		} else {
 			mapped["gateway_name"] = "<unknown>"
 		}
-		mapped["gateway_name"] = pgw.Name
-		if network.GetSecondaryGatewayId() != "" {
-			sgw, err = client.New().Host.Inspect(sgwID, temporal.GetExecutionTimeout())
-			if err == nil {
-				mapped["secondary_gateway_name"] = sgw.Name
-			} else {
-				mapped["secondary_gateway_name"] = "<unknown>"
+
+		if pgw != nil {
+			mapped["gateway_name"] = pgw.Name
+			if network.GetSecondaryGatewayId() != "" {
+				sgw, err = client.New().Host.Inspect(sgwID, temporal.GetExecutionTimeout())
+				if err == nil {
+					mapped["secondary_gateway_name"] = sgw.Name
+				} else {
+					mapped["secondary_gateway_name"] = "<unknown>"
+				}
 			}
 		}
+
 		// Removed entry virtual_ip if empty
 		if len(mapped["virtual_ip"].(map[string]interface{})) == 0 {
 			delete(mapped, "virtual_ip")
@@ -160,7 +165,7 @@ var networkCreate = cli.Command{
 		},
 		cli.BoolFlag{
 			Name:  "failover",
-			Usage: "creates 2 gateways for the network with a VIP used a internal default route",
+			Usage: "creates 2 gateways for the network with a VIP used as internal default route",
 		},
 		cli.StringFlag{
 			Name: "S, sizing",
